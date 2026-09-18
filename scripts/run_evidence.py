@@ -208,7 +208,15 @@ async def _run_discovery(
     surface = await PlaywrightWebSurface.launch(headed=False, executable_path=_PLAYWRIGHT_EXECUTABLE_PATH)
     logger = StructuredLogger(run_id="discovery_trace", log_dir=discovery_evidence_dir)
     evidence = DiscoveryEvidenceCapture(discovery_evidence_dir)
-    loop = DiscoveryLoop(model, surface, _policy(), logger, evidence, max_steps=15, overall_timeout_s=120)
+    # target_base_url is the assignment's TARGET half of the GOAL+TARGET
+    # contract -- without it, a real model's first decision has no way to
+    # know what application it's even looking at (this is the exact fix
+    # for the genuine POLICY_BLOCKED/host='' failure from attempt 1: see
+    # DiscoveryLoop's docstring/comments for the full root-cause analysis).
+    loop = DiscoveryLoop(
+        model, surface, _policy(), logger, evidence,
+        max_steps=15, overall_timeout_s=120, target_base_url=base_url,
+    )
     try:
         trace = await loop.run(GOAL)
         if trace.stop_reason == DiscoveryStopReason.GOAL_ACHIEVED:

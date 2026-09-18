@@ -148,6 +148,142 @@ async def test_policy_blocked_proposal_stops_before_surface_is_touched(tmp_path:
     assert ("screenshot",) in surface.calls  # evidence capture still ran
 
 
+# -- NAVIGATE resolution: the GOAL+TARGET fix for the genuine Phase 8
+# POLICY_BLOCKED/host='' failure a real AnthropicModelAdapter run hit
+# (attempt 1 against the local demo app -- see the Phase 8 commit history
+# and REPORT.md for the full root-cause writeup). A fresh surface's
+# current_url() is "about:blank", which is not a hierarchical URL a
+# relative NAVIGATE route can be resolved against; these tests cover the
+# resolution logic directly (fast, no browser) plus the handful of
+# full-loop scenarios that need PolicyEngine actually involved. None of
+# this weakens PolicyEngine or bypasses check_domain -- every case below
+# still asserts the resolved URL is independently policy-checked. ---
+
+def test_relative_navigate_resolves_against_trusted_target_base_url_when_current_url_has_no_anchor(tmp_path: Path):
+    surface = FakeSurfaceAdapter()
+    model = FakeModelAdapter([])
+    loop = _make_loop(surface, model, tmp_path, target_base_url="http://127.0.0.1:9000")
+
+    resolved = loop._resolve_navigation_url("about:blank", "/search")
+
+    assert resolved == "http://127.0.0.1:9000/search"
+
+
+def test_absolute_url_is_returned_unchanged_regardless_of_target_base_url(tmp_path: Path):
+    surface = FakeSurfaceAdapter()
+    model = FakeModelAdapter([])
+    loop = _make_loop(surface, model, tmp_path, target_base_url="http://127.0.0.1:9000")
+
+    resolved = loop._resolve_navigation_url("about:blank", "http://127.0.0.1:8000/search")
+
+    assert resolved == "http://127.0.0.1:8000/search"
+
+
+def test_relative_navigate_with_no_trusted_target_and_no_anchor_fails_safely_not_a_crash(tmp_path: Path):
+    """The exact pre-fix reproduction: no target_base_url configured, no
+    real page loaded yet -- must resolve to *something* PolicyEngine can
+    safely reject (never raise, never silently pass through), matching
+    the genuine 'host don't-know-the-target-yet' failure observed."""
+    surface = FakeSurfaceAdapter()
+    model = FakeModelAdapter([])
+    loop = _make_loop(surface, model, tmp_path)  # no target_base_url
+
+    resolved = loop._resolve_navigation_url("about:blank", "/search")
+
+    assert not loop._is_absolute_http_url(resolved)
+    decision = loop._policy.check_domain(resolved)
+    assert decision.allowed is False
+    assert "not in the allowed domain list" in decision.reason
+
+
+async def test_full_loop_relative_navigate_with_target_base_url_reaches_goal(tmp_path: Path):
+    """The full end-to-end regression proof: the exact scripted first
+    action a real model proposed (a bare relative route, e.g. '/search',
+    on a fresh session) now succeeds once target_base_url is configured
+    -- reproducing the genuine Phase 8 failure and proving the fix."""
+    surface = FakeSurfaceAdapter()
+    member_id_el = InteractiveElement(role="textbox", accessible_name="Member ID")
+    search_el = InteractiveElement(role="button", accessible_name="Search")
+    balance_el = InteractiveElement(role="status", accessible_name="Savings Balance")
+    surface.register_role_name("textbox", "Member ID", [FakeElement()])
+    surface.register_role_name("button", "Search", [FakeElement()])
+    surface.register_role_name("status", "Savings Balance", [FakeElement(text="$1,234.56")])
+    surface.script_observation(_obs("about:blank", []))  # the real, un-anchored first observation
+    surface.script_observation(_obs(f"{BASE}/search", [member_id_el, search_el]))
+    surface.script_observation(_obs(f"{BASE}/search", [member_id_el, search_el]))
+    surface.script_observation(_obs(f"{BASE}/results", [balance_el]))
+    surface.script_observation(_obs(f"{BASE}/results", [balance_el]))
+
+    model = FakeModelAdapter([
+        AgentAction(action=ActionType.NAVIGATE, params={"route": "/search"}, reasoning="Go to the search page."),
+        AgentAction(action=ActionType.FILL, target=TargetDescriptor(role="textbox", accessible_name="Member ID"),
+                    params={"value": "12345"}, reasoning="Enter the member id."),
+        AgentAction(action=ActionType.CLICK, target=TargetDescriptor(role="button", accessible_name="Search"),
+                    reasoning="Submit the search."),
+        AgentAction(action=ActionType.CHECKPOINT, params={"description": "results reached"}, reasoning="Confirm results."),
+        AgentAction(action=ActionType.READ_EXTRACT, target=TargetDescriptor(role="status", accessible_name="Savings Balance"),
+                    params={"output_name": "savings_balance"}, reasoning="Read the balance."),
+        AgentAction(action=ActionType.FINISH, reasoning="Found the balance; goal achieved."),
+    ])
+    loop = _make_loop(surface, model, tmp_path, target_base_url=BASE)
+
+    trace = await loop.run("Look up member 12345 and return their current savings balance.")
+
+    assert trace.stop_reason == DiscoveryStopReason.GOAL_ACHIEVED
+    assert ("navigate", f"{BASE}/search") in surface.calls  # resolved against the trusted target, not left relative
+
+
+async def test_absolute_disallowed_navigate_is_policy_blocked(tmp_path: Path):
+    surface = FakeSurfaceAdapter()
+    surface.script_observation(_obs("about:blank", []))
+    action = AgentAction(action=ActionType.NAVIGATE, params={"url": "http://evil.example.com/"}, reasoning="go there")
+    model = FakeModelAdapter([action])
+    loop = _make_loop(surface, model, tmp_path, target_base_url=BASE)
+
+    trace = await loop.run("goal")
+
+    assert trace.stop_reason == DiscoveryStopReason.POLICY_BLOCKED
+    assert "evil.example.com" in trace.stop_message
+    assert _business_calls(surface) == []
+
+
+def test_protocol_relative_escape_attempt_cannot_bypass_the_allowlist(tmp_path: Path):
+    """A '//host/path' relative reference is a valid network-path
+    reference per RFC 3986 -- urljoin correctly replaces the host, exactly
+    as a browser would. Resolution is not the security boundary here;
+    PolicyEngine.check_domain() is, and it still runs on whatever gets
+    resolved, so this can never turn into an allowed navigation."""
+    surface = FakeSurfaceAdapter()
+    model = FakeModelAdapter([])
+    loop = _make_loop(surface, model, tmp_path, target_base_url=BASE)
+
+    resolved = loop._resolve_navigation_url("about:blank", "//evil.example.com/steal")
+
+    assert resolved.startswith("http://evil.example.com")  # resolution behaves correctly per RFC 3986...
+    decision = loop._policy.check_domain(resolved)
+    assert decision.allowed is False  # ...but PolicyEngine still rejects it -- no bypass
+
+
+async def test_redirect_to_disallowed_host_after_click_is_still_caught(tmp_path: Path):
+    """Section 3.4's redirect warning, applied to discovery: even after a
+    NAVIGATE/CLICK succeeds, the post-action check_domain() re-check
+    (already in run(), unmodified by this fix) must still catch a
+    surface-level redirect that escapes the allowlist."""
+    surface = FakeSurfaceAdapter()
+    surface.register_role_name("button", "Search", [FakeElement()])
+    surface.script_observation(_obs(f"{BASE}/search", [InteractiveElement(role="button", accessible_name="Search")]))
+    surface.script_observation(_obs(f"{BASE}/search", [InteractiveElement(role="button", accessible_name="Search")]))
+    surface.script_redirect_on_next_click("http://evil.example.com/hijack")
+    action = AgentAction(action=ActionType.CLICK, target=TargetDescriptor(role="button", accessible_name="Search"), reasoning="submit")
+    model = FakeModelAdapter([action])
+    loop = _make_loop(surface, model, tmp_path, target_base_url=BASE)
+
+    trace = await loop.run("goal")
+
+    assert trace.stop_reason == DiscoveryStopReason.POLICY_BLOCKED
+    assert "escaped the allowlist" in trace.stop_message
+
+
 async def test_max_steps_terminates_a_never_finishing_run(tmp_path: Path):
     surface = FakeSurfaceAdapter()
     elements = [InteractiveElement(role="button", accessible_name=f"Btn{i}") for i in range(10)]

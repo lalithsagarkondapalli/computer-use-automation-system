@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from cua.actions import ActionType
 from cua.agent.actions import AgentAction
@@ -67,6 +67,7 @@ class DiscoveryLoop:
         stuck_repeat_threshold: int = 3,
         max_invalid_output_retries: int = 2,
         step_timeout_ms: int = 10_000,
+        target_base_url: str | None = None,
     ):
         self._model = model
         self._surface = surface
@@ -79,6 +80,23 @@ class DiscoveryLoop:
         self._stuck_repeat_threshold = stuck_repeat_threshold
         self._max_invalid_output_retries = max_invalid_output_retries
         self._step_timeout_ms = step_timeout_ms
+        # The assignment's contract is GOAL + TARGET (Section 3.1) -- this
+        # is the TARGET half, an explicitly caller-configured, TRUSTED base
+        # URL for the application under discovery. Two uses, both additive
+        # and neither bypassing anything:
+        #   1. It is told to the model as context (see `run()` below), so a
+        #      real model's very first decision is actually informed about
+        #      where the target application lives, instead of guessing.
+        #   2. It is the one allowed fallback anchor `_resolve_navigation_url`
+        #      may use when the surface's live current_url isn't itself a
+        #      usable anchor yet (a freshly-launched surface's "about:blank"
+        #      -- see that method's docstring). It is NEVER used to skip or
+        #      soften the PolicyEngine.check_domain() call that already runs
+        #      on every resolved URL: a misconfigured or malicious
+        #      target_base_url gets rejected by that check exactly like any
+        #      other disallowed host would, so this cannot turn an unknown
+        #      destination into an allowed one (Phase 8 security review).
+        self._target_base_url = target_base_url
 
     def _guard(self) -> None:
         """Called immediately before every live-surface-touching call in
@@ -93,6 +111,14 @@ class DiscoveryLoop:
         trace = DiscoveryTrace(run_id=run_id, goal=goal)
         started = time.monotonic()
         history: list[str] = [f"goal: {goal}"]
+        if self._target_base_url:
+            # The TARGET half of the GOAL+TARGET contract, given to the
+            # model the same way `goal` already is -- through the bounded
+            # history window `_build_prompt` sends, not a new field on
+            # ModelAdapter.decide() or Observation (Section 6: the model
+            # receives only what it needs, and this reuses the existing
+            # channel rather than widening the model-facing interface).
+            history.append(f"target application base URL: {self._target_base_url}")
         last_pair_fp: str | None = None
         repeat_count = 0
 
@@ -358,9 +384,47 @@ class DiscoveryLoop:
         return Step(step_id="proposal", action=action.action, target=action.target, params=action.params, risk=risk)
 
     def _resolve_navigation_url(self, current_url: str, url_or_route: str) -> str:
+        """Resolve a model-proposed NAVIGATE target to an absolute URL for
+        `PolicyEngine.check_domain()` to evaluate -- this method decides
+        what anchor a relative route is resolved against, never whether the
+        result is allowed (that is check_domain's job alone, and it still
+        runs on whatever this returns, every time, with no exception).
+
+        An already-absolute http(s) URL is returned unchanged. A relative
+        route is first resolved against the surface's own live current_url,
+        which is correct and safe for genuine same-session relative links:
+        by the time any NAVIGATE/CLICK has succeeded once, current_url has
+        already passed check_domain (pre- and post-navigation -- see
+        `run()`), so it is a trusted anchor, not merely a convenient one.
+
+        The one case that anchor cannot serve is the very first navigation
+        of a fresh session, where current_url is "about:blank" -- not a
+        hierarchical URL, so urljoin can't meaningfully combine it with a
+        relative route (it comes back unchanged, with no host at all,
+        which is exactly the 'host don't-know-the-target-yet' failure a
+        real Anthropic-model-driven run hit in practice). For that case
+        only, this falls back to the caller-configured, TRUSTED
+        `target_base_url` (the assignment's TARGET) as the anchor instead
+        -- the same pattern `ReplayEngine._resolve_navigation_url` already
+        uses against `artifact.target.base_url_pattern`, generalized here
+        to discovery, which has no artifact yet to read one from.
+
+        This fallback is a safety net, not the primary fix: `run()` also
+        tells the model the target base URL directly, so a well-informed
+        model can simply propose an absolute NAVIGATE URL itself and never
+        need this branch at all.
+        """
         if url_or_route.startswith("http://") or url_or_route.startswith("https://"):
             return url_or_route
-        return urljoin(current_url, url_or_route)
+        resolved = urljoin(current_url, url_or_route)
+        if not self._is_absolute_http_url(resolved) and self._target_base_url:
+            resolved = urljoin(self._target_base_url, url_or_route)
+        return resolved
+
+    @staticmethod
+    def _is_absolute_http_url(url: str) -> bool:
+        parsed = urlparse(url)
+        return parsed.scheme in ("http", "https") and bool(parsed.netloc)
 
     def _history_line(self, step_number: int, action: AgentAction) -> str:
         target_desc = ""
