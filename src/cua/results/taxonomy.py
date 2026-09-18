@@ -50,6 +50,13 @@ class OutcomeCode(str, Enum):
     UNKNOWN_DIALOG = "UNKNOWN_DIALOG"
     STUCK_STATE = "STUCK_STATE"
     MAX_STEPS_EXCEEDED = "MAX_STEPS_EXCEEDED"
+    # Added in Phase 4 -- discovery-specific stopping conditions that are
+    # "automation cannot safely continue," not a crash, same rationale as
+    # the four codes above (all pre-existing from Phase 2, so discovery's
+    # need for them was anticipated before this phase's code existed).
+    DISCOVERY_TIMEOUT = "DISCOVERY_TIMEOUT"  # overall wall-clock budget exceeded
+    INVALID_MODEL_OUTPUT = "INVALID_MODEL_OUTPUT"  # bounded correction retries exhausted
+    HUMAN_INTERVENTION_REQUESTED = "HUMAN_INTERVENTION_REQUESTED"  # model explicitly asked
 
     # HARD_FAILURE -- stop and surface a clear, debuggable error.
     CHECKPOINT_FAILED = "CHECKPOINT_FAILED"
@@ -86,6 +93,9 @@ VALID_CODES_FOR_STATUS: dict[RunStatus, frozenset[OutcomeCode]] = {
             OutcomeCode.UNKNOWN_DIALOG,
             OutcomeCode.STUCK_STATE,
             OutcomeCode.MAX_STEPS_EXCEEDED,
+            OutcomeCode.DISCOVERY_TIMEOUT,
+            OutcomeCode.INVALID_MODEL_OUTPUT,
+            OutcomeCode.HUMAN_INTERVENTION_REQUESTED,
         }
     ),
     RunStatus.HARD_FAILURE: frozenset(

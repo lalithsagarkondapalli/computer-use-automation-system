@@ -33,6 +33,11 @@ class Config(BaseModel):
 
     max_discovery_steps: int = 25
     step_timeout_ms: int = 10_000
+    # Added in Phase 4 -- the remaining bounded-loop stopping conditions
+    # (Section 3.1) beyond max_discovery_steps.
+    discovery_overall_timeout_s: int = 300
+    discovery_stuck_repeat_threshold: int = 3
+    discovery_max_invalid_output_retries: int = 2
 
     artifact_dir: Path = Path("artifacts")
     evidence_dir: Path = Path("evidence")
@@ -70,6 +75,12 @@ class Config(BaseModel):
             kwargs["max_discovery_steps"] = int(v)
         if (v := os.environ.get("STEP_TIMEOUT_MS")) is not None:
             kwargs["step_timeout_ms"] = int(v)
+        if (v := os.environ.get("DISCOVERY_OVERALL_TIMEOUT_S")) is not None:
+            kwargs["discovery_overall_timeout_s"] = int(v)
+        if (v := os.environ.get("DISCOVERY_STUCK_REPEAT_THRESHOLD")) is not None:
+            kwargs["discovery_stuck_repeat_threshold"] = int(v)
+        if (v := os.environ.get("DISCOVERY_MAX_INVALID_OUTPUT_RETRIES")) is not None:
+            kwargs["discovery_max_invalid_output_retries"] = int(v)
         if (v := os.environ.get("ARTIFACT_DIR")) is not None:
             kwargs["artifact_dir"] = Path(v)
         if (v := os.environ.get("EVIDENCE_DIR")) is not None:

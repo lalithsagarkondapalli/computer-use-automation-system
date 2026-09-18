@@ -12,13 +12,18 @@ dependencies = [
     # ONLY by cua.surfaces.playwright_web -- see tests/test_replay_model_isolation.py
     # for the automated proof that cua.replay never touches it either.
     "playwright>=1.47,<2",
+    # Added in Phase 4: AnthropicModelAdapter (src/cua/models/anthropic_adapter.py)
+    # is the ONLY module in the repository that imports this SDK -- every
+    # other module reaches the model only through the provider-neutral
+    # ModelAdapter interface (src/cua/models/base.py). See
+    # tests/test_discovery_replay_isolation.py for the automated proof
+    # that cua.replay still never imports this package.
+    "anthropic>=0.40,<1",
 ]
 
-# NOTE: fastapi/uvicorn and the anthropic SDK are intentionally NOT listed
-# yet. Each dependency should earn its place; they are added in the
-# pyproject update that ships the phase that actually imports them
-# (FastAPI/uvicorn -> Phase 5 handoff console + Phase 6 demo app, anthropic
-# -> Phase 4 discovery). See REPORT.md "Cuts" for the full dependency log.
+# NOTE: fastapi/uvicorn are intentionally NOT listed yet -- they are added
+# in the pyproject update that ships Phase 5 (handoff console) / Phase 6
+# (demo app). See REPORT.md "Cuts" for the full dependency log.
 
 [project.optional-dependencies]
 dev = [
