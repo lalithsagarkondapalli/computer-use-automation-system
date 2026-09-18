@@ -28,9 +28,39 @@ finished deliverable.
 
 ```bash
 pip install -e ".[dev]"
+python -m playwright install chromium
 pytest
 ```
 
-No API key or browser is required to run the current test suite — Phase 2
-covers configuration, the artifact schema, the result/error taxonomy, and
-the (currently model-free, browser-free) domain models and interfaces.
+No API key is required to run the test suite — every test either runs
+model-free (`FakeModelAdapter`/`FakeSurfaceAdapter`) or, for the real-
+Chromium tests, drives the local demo app with a scripted fake model.
+`python -m playwright install chromium` downloads a normal, unpinned
+Chromium; nothing in the test suite or `scripts/` requires a special
+browser path on a normal machine.
+
+## Phase 8: genuine LLM discovery evidence
+
+`scripts/run_evidence.py` performs the one genuine, real-model workflow
+this project requires: a real `AnthropicModelAdapter` drives `DiscoveryLoop`
+against a real Chromium browser and the local demo app, with the model
+(not a script) deciding every action; on success it builds and saves a
+`CapabilityArtifact` under `evidence/`, then deterministically replays that
+exact artifact in a fresh browser session with a different input and
+verifies the typed output -- with zero model calls during replay.
+
+```bash
+export ANTHROPIC_API_KEY='...'   # your own key, in your own shell -- never committed
+export MODEL_NAME='...'          # a current Anthropic model id, see
+                                  # https://docs.claude.com/en/docs/about-claude/models
+python scripts/run_evidence.py
+```
+
+The script starts and stops the demo app itself (no second terminal
+needed), reads the API key only from the environment, and never writes it
+anywhere. See the script's own module docstring for the full credential-
+handling guarantees. `tests/test_run_evidence.py` exercises this script's
+orchestration logic (credential handling, subprocess environment hygiene,
+artifact parameterization, the replay zero-model-call boundary) without a
+real key -- that is explicitly not genuine Phase 8 evidence, and is never
+presented as such.
