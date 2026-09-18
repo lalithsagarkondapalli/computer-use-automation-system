@@ -243,7 +243,11 @@ async def test_prohibited_action_type_blocks_that_step(tmp_path: Path):
     assert result.status == RunStatus.POLICY_BLOCKED
     assert result.code == OutcomeCode.ACTION_TYPE_NOT_ALLOWED
     assert result.failing_step_id == "s2_fill"
-    assert ("navigate", "/search") in surface.calls  # navigate DID run -- policy check is per step
+    # navigate DID run -- policy check is per step. Recorded with its
+    # fully-resolved absolute URL (Phase 6 bug fix: a surface with no
+    # already-loaded page has no origin to resolve a bare relative route
+    # against), not the artifact's raw "/search" route param.
+    assert ("navigate", "http://127.0.0.1:8000/search") in surface.calls
 
 
 async def test_irreversible_action_without_approval_is_policy_blocked(tmp_path: Path):

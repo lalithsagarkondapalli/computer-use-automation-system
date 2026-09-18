@@ -1,0 +1,188 @@
+schema_version: '1.0'
+capability_id: member_lookup_balance
+capability_version: 1.0.0
+name: Look up member and read savings balance
+description: Search the CU Ops Console demo app for a member by ID and extract their
+  current savings balance. Business outcome (member not found) and an unexpected Compliance
+  Hold interstitial (requiring human handoff) are both classified via checkpoint probes,
+  not hardcoded in ReplayEngine.
+target:
+  app_name: CU Ops Console
+  vendor: internal-demo
+  product: cu-ops-console
+  base_url_pattern: http://127.0.0.1:8000
+  compatibility_fingerprint: null
+risk: SAFE
+inputs:
+- name: member_id
+  type: string
+  required: true
+  description: 5-digit synthetic member identifier
+  example: '12345'
+outputs:
+- name: savings_balance
+  type: float
+  description: Current savings balance, parsed from currency text
+steps:
+- step_id: s1_navigate
+  action: navigate
+  target: null
+  params:
+    route: /search
+  extraction: null
+  checkpoint: null
+  timeout_ms: 10000
+  retry:
+    max_attempts: 1
+    backoff_ms: 500
+  risk: SAFE
+- step_id: s2_fill
+  action: fill
+  target:
+    role: textbox
+    accessible_name: Member ID
+    visible_text: null
+    semantic_relationship: null
+    nearby_anchor: null
+    dom_selector: null
+    frame_path: []
+    expected_control_type: null
+    strategy_order:
+    - role_name
+    - label
+    - text
+    - dom_selector
+  params:
+    value: '{{member_id}}'
+  extraction: null
+  checkpoint: null
+  timeout_ms: 10000
+  retry:
+    max_attempts: 1
+    backoff_ms: 500
+  risk: SAFE
+- step_id: s3_click
+  action: click
+  target:
+    role: button
+    accessible_name: Search
+    visible_text: null
+    semantic_relationship: null
+    nearby_anchor: null
+    dom_selector: null
+    frame_path: []
+    expected_control_type: null
+    strategy_order:
+    - role_name
+    - label
+    - text
+    - dom_selector
+  params: {}
+  extraction: null
+  checkpoint: null
+  timeout_ms: 10000
+  retry:
+    max_attempts: 1
+    backoff_ms: 500
+  risk: SAFE
+- step_id: s4_checkpoint
+  action: checkpoint
+  target: null
+  params: {}
+  extraction: null
+  checkpoint:
+    description: member record retrieved and balance visible
+    assertion:
+      type: element_visible
+      target:
+        role: status
+        accessible_name: Savings Balance
+        visible_text: null
+        semantic_relationship: null
+        nearby_anchor: null
+        dom_selector: null
+        frame_path: []
+        expected_control_type: null
+        strategy_order:
+        - role_name
+        - label
+        - text
+        - dom_selector
+    probes:
+    - description: member not found
+      assertion:
+        type: text_present
+        text: No member found
+      status: BUSINESS_OUTCOME
+      code: CUSTOMER_NOT_FOUND
+      probe_timeout_ms: 1500
+    - description: compliance hold interstitial blocking the record
+      assertion:
+        type: element_visible
+        target:
+          role: alertdialog
+          accessible_name: Compliance Hold
+          visible_text: null
+          semantic_relationship: null
+          nearby_anchor: null
+          dom_selector: null
+          frame_path: []
+          expected_control_type: null
+          strategy_order:
+          - role_name
+          - label
+          - text
+          - dom_selector
+      status: ESCALATION_REQUIRED
+      code: UNKNOWN_DIALOG
+      probe_timeout_ms: 1500
+  timeout_ms: 5000
+  retry:
+    max_attempts: 1
+    backoff_ms: 500
+  risk: SAFE
+- step_id: s5_extract
+  action: read_extract
+  target:
+    role: status
+    accessible_name: Savings Balance
+    visible_text: null
+    semantic_relationship: null
+    nearby_anchor: null
+    dom_selector: null
+    frame_path: []
+    expected_control_type: null
+    strategy_order:
+    - role_name
+    - label
+    - text
+    - dom_selector
+  params: {}
+  extraction:
+    output_name: savings_balance
+    target:
+      role: status
+      accessible_name: Savings Balance
+      visible_text: null
+      semantic_relationship: null
+      nearby_anchor: null
+      dom_selector: null
+      frame_path: []
+      expected_control_type: null
+      strategy_order:
+      - role_name
+      - label
+      - text
+      - dom_selector
+    attribute: text
+    transform: currency_to_float
+  checkpoint: null
+  timeout_ms: 10000
+  retry:
+    max_attempts: 1
+    backoff_ms: 500
+  risk: SAFE
+preconditions: []
+created_by: discovery_agent
+discovery_run_id: null
+variant_overrides: {}

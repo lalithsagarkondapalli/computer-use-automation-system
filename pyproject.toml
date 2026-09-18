@@ -19,11 +19,16 @@ dependencies = [
     # tests/test_discovery_replay_isolation.py for the automated proof
     # that cua.replay still never imports this package.
     "anthropic>=0.40,<1",
+    # Added in Phase 6: cua.demo_app is the local "legacy credit union back
+    # office" target the automation system operates on -- FastAPI/Jinja2
+    # for the server-rendered app, uvicorn to run it (including as a real
+    # subprocess in tests/test_demo_app_e2e.py). Phase 5's OperatorConsole
+    # deliberately does NOT use these -- stdlib http.server was sufficient
+    # there; this is the one place in the repo these are actually needed.
+    "fastapi>=0.110,<1",
+    "uvicorn>=0.30,<1",
+    "jinja2>=3.1,<4",
 ]
-
-# NOTE: fastapi/uvicorn are intentionally NOT listed yet -- they are added
-# in the pyproject update that ships Phase 5 (handoff console) / Phase 6
-# (demo app). See REPORT.md "Cuts" for the full dependency log.
 
 [project.optional-dependencies]
 dev = [

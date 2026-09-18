@@ -125,6 +125,16 @@ class ReplayEngine:
                         RunStatus.POLICY_BLOCKED, OutcomeCode.DOMAIN_NOT_ALLOWED,
                         message=nav_decision.reason, failing_step_id=step.step_id,
                     )
+                # Bug fix (Phase 6, found by a real-browser test): a bare
+                # relative "route" can only be resolved by a surface that
+                # already has some page loaded at the right origin.
+                # FakeSurfaceAdapter happens to default its own internal
+                # URL to the same host artifact fixtures use, which masked
+                # this; a freshly-launched real browser page (about:blank)
+                # has no origin to resolve a relative goto() against at
+                # all and fails outright. Always hand the surface the
+                # already-resolved absolute URL instead.
+                step.params["url"] = target_url
 
             # -- action, with bounded retry, plus (Section 9) one further
             # deterministic retry if a human handoff resolves an ambiguity --

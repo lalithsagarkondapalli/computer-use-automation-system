@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>CU Ops Console &mdash; Results</title>
+</head>
+<body>
+  <h1>Member Results</h1>
+
+  {% if status == "not_found" %}
+  <p role="alert">No member found for ID {{ member_id }} (synthetic data).</p>
+
+  {% elif status == "found" %}
+  <table>
+    <tr><td>Member ID</td><td>{{ member.member_id }}</td></tr>
+    <tr><td>Name</td><td>{{ member.name }}</td></tr>
+  </table>
+  <div role="status" aria-label="Savings Balance">{{ member.savings_balance }}</div>
+
+  {% elif status == "compliance_hold" %}
+  <!-- Unexpected interstitial: a real modal that blocks the underlying
+       result content until a human dismisses it. No server-side session
+       involved -- this is pure client-side DOM state, same pattern as
+       tests/fixtures/sample_page.html's spinner toggle. -->
+  <div role="alertdialog" aria-label="Compliance Hold" id="hold-modal"
+       style="border:2px solid #b00020; padding:1em; max-width:28em;">
+    <p><strong>Compliance Hold</strong></p>
+    <p>This record requires manual review before balance data may be
+       displayed (synthetic scenario -- no real compliance system involved).</p>
+    <button aria-label="Clear Hold" onclick="
+        document.getElementById('hold-modal').style.display='none';
+        document.getElementById('member-results').style.display='block';
+        location.hash='#hold-cleared';
+    ">Clear Hold</button>
+  </div>
+
+  <div id="member-results" style="display:none">
+    <table>
+      <tr><td>Member ID</td><td>{{ member.member_id }}</td></tr>
+      <tr><td>Name</td><td>{{ member.name }}</td></tr>
+    </table>
+    <div role="status" aria-label="Savings Balance">{{ member.savings_balance }}</div>
+  </div>
+  {% endif %}
+</body>
+</html>

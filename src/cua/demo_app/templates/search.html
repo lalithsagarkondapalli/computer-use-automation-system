@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>CU Ops Console &mdash; Member Search</title>
+</head>
+<body>
+  <h1>CU Ops Console <small>(synthetic demo data only)</small></h1>
+
+  {% if error %}
+  <p role="alert" style="color:#b00020;">{{ error }}</p>
+  {% endif %}
+
+  <!-- Legacy characteristic: table-based form layout, aria-label instead
+       of a wired-up <label for>, no data-testid anywhere. -->
+  <form method="get" action="/results">
+    <table>
+      <tr>
+        <td>Member ID</td>
+        <td><input aria-label="Member ID" name="member_id" type="text" maxlength="5" /></td>
+      </tr>
+    </table>
+    <button aria-label="Search" type="submit">Search</button>
+  </form>
+</body>
+</html>

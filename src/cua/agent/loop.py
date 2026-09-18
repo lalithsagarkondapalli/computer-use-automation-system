@@ -173,6 +173,11 @@ class DiscoveryLoop:
                     trace.steps.append(record)
                     self._log(run_id, step_number, "policy_reject", detail={"reason": nav_decision.reason})
                     return await self._stop(trace, run_id, step_number, DiscoveryStopReason.POLICY_BLOCKED, nav_decision.reason)
+                # Same bug/fix as ReplayEngine (Phase 6): hand the surface
+                # the already-resolved absolute URL, not a bare relative
+                # route it may have no loaded-page origin to resolve
+                # against (a freshly-launched real browser page).
+                action.params["url"] = target_url
 
             policy_step = self._build_policy_step(action, checkpoint_assertion)
             action_decision = self._policy.check_action(policy_step)
