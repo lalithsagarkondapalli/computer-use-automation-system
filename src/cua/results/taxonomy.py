@@ -57,6 +57,10 @@ class OutcomeCode(str, Enum):
     DISCOVERY_TIMEOUT = "DISCOVERY_TIMEOUT"  # overall wall-clock budget exceeded
     INVALID_MODEL_OUTPUT = "INVALID_MODEL_OUTPUT"  # bounded correction retries exhausted
     HUMAN_INTERVENTION_REQUESTED = "HUMAN_INTERVENTION_REQUESTED"  # model explicitly asked
+    # Added in Phase 5: the human-in-the-loop handoff budget (repeated
+    # resume attempts, or repeated distinct escalations) was exhausted --
+    # automation cannot safely keep asking. See cua.handoff.controller.
+    INTERVENTION_EXHAUSTED = "INTERVENTION_EXHAUSTED"
 
     # HARD_FAILURE -- stop and surface a clear, debuggable error.
     CHECKPOINT_FAILED = "CHECKPOINT_FAILED"
@@ -96,6 +100,7 @@ VALID_CODES_FOR_STATUS: dict[RunStatus, frozenset[OutcomeCode]] = {
             OutcomeCode.DISCOVERY_TIMEOUT,
             OutcomeCode.INVALID_MODEL_OUTPUT,
             OutcomeCode.HUMAN_INTERVENTION_REQUESTED,
+            OutcomeCode.INTERVENTION_EXHAUSTED,
         }
     ),
     RunStatus.HARD_FAILURE: frozenset(

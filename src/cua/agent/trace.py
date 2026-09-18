@@ -31,6 +31,13 @@ class DiscoveryStopReason(str, Enum):
     POLICY_BLOCKED = "POLICY_BLOCKED"
     SURFACE_ERROR = "SURFACE_ERROR"
     HUMAN_REQUESTED = "HUMAN_REQUESTED"
+    # Phase 5: HUMAN_REQUESTED and STUCK_STATE are handoff-eligible (see
+    # cua.agent.loop.DiscoveryLoop._HANDOFF_ELIGIBLE); this is the stop
+    # reason used only when a handoff was attempted and its resume budget
+    # was exhausted rather than validated -- automation cannot safely keep
+    # asking. Mirrors OutcomeCode.INTERVENTION_EXHAUSTED (cua.results.taxonomy),
+    # which is replay's equivalent for the same underlying budget.
+    INTERVENTION_EXHAUSTED = "INTERVENTION_EXHAUSTED"
 
 
 class DiscoveryStepRecord(BaseModel):

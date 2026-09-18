@@ -35,6 +35,7 @@ from cua.agent.validation import validate_proposal
 from cua.artifact.checks import CheckpointAssertion, CheckpointSpec
 from cua.artifact.extraction import ExtractionSpec
 from cua.artifact.schema import Step
+from cua.handoff import HandoffController, InterventionBudgetExhausted, InterventionRequest
 from cua.models.base import ModelAdapter, ModelOutputError
 from cua.observability.events import LogEvent
 from cua.observability.logger import StructuredLogger
@@ -44,6 +45,14 @@ from cua.surfaces.observation import Observation
 
 
 class DiscoveryLoop:
+    # Section 8 (Phase 5): "do NOT automatically use human handoff for
+    # every failure." Only these two stop reasons -- the model explicitly
+    # asking, and mechanically-detected stuck-state -- are eligible to
+    # become an intervention instead of an immediate stop. MAX_STEPS,
+    # TIMEOUT, POLICY_BLOCKED, INVALID_OUTPUT_EXHAUSTED, and SURFACE_ERROR
+    # always stop immediately, preserving the Phase 4 taxonomy exactly.
+    _HANDOFF_ELIGIBLE = frozenset({DiscoveryStopReason.HUMAN_REQUESTED, DiscoveryStopReason.STUCK_STATE})
+
     def __init__(
         self,
         model: ModelAdapter,
@@ -51,6 +60,7 @@ class DiscoveryLoop:
         policy: PolicyEngine,
         logger: StructuredLogger,
         evidence: DiscoveryEvidenceCapture | None = None,
+        handoff: HandoffController | None = None,
         *,
         max_steps: int = 25,
         overall_timeout_s: float = 300,
@@ -63,11 +73,20 @@ class DiscoveryLoop:
         self._policy = policy
         self._logger = logger
         self._evidence = evidence
+        self._handoff = handoff
         self._max_steps = max_steps
         self._overall_timeout_s = overall_timeout_s
         self._stuck_repeat_threshold = stuck_repeat_threshold
         self._max_invalid_output_retries = max_invalid_output_retries
         self._step_timeout_ms = step_timeout_ms
+
+    def _guard(self) -> None:
+        """Called immediately before every live-surface-touching call in
+        this loop when a handoff controller is attached, so an automated
+        action during HUMAN_CONTROL is impossible by construction, not
+        merely prevented by this loop's own control flow (Section 5)."""
+        if self._handoff is not None:
+            self._handoff.assert_automation_control()
 
     async def run(self, goal: str) -> DiscoveryTrace:
         run_id = str(uuid.uuid4())
@@ -77,6 +96,7 @@ class DiscoveryLoop:
         last_pair_fp: str | None = None
         repeat_count = 0
 
+        self._guard()
         observation = await self._surface.observe(step_number=0)
         baseline_observation = observation
 
@@ -110,22 +130,39 @@ class DiscoveryLoop:
             if action.action == ActionType.REQUEST_HUMAN:
                 record.executed = True
                 trace.steps.append(record)
-                return await self._stop(
+                outcome = await self._handle_potential_handoff(
                     trace, run_id, step_number, DiscoveryStopReason.HUMAN_REQUESTED,
                     action.params.get("reason", "model requested human intervention"),
                 )
+                if outcome is not None:
+                    return outcome
+                history.append(f"step {step_number}: requested human help -- a human intervened and control has resumed")
+                last_pair_fp = None
+                repeat_count = 0
+                self._guard()
+                observation = await self._surface.observe(step_number=step_number)
+                continue
 
             pair_fp = f"{fingerprint_observation(observation)}:{fingerprint_action(action)}"
             repeat_count = repeat_count + 1 if pair_fp == last_pair_fp else 1
             last_pair_fp = pair_fp
             if repeat_count >= self._stuck_repeat_threshold:
                 trace.steps.append(record)
-                return await self._stop(
+                outcome = await self._handle_potential_handoff(
                     trace, run_id, step_number, DiscoveryStopReason.STUCK_STATE,
                     f"the same action was proposed against the same observed state {repeat_count} times in a row",
                 )
+                if outcome is not None:
+                    return outcome
+                history.append(f"step {step_number}: was stuck repeating the same action -- a human intervened and control has resumed")
+                last_pair_fp = None
+                repeat_count = 0
+                self._guard()
+                observation = await self._surface.observe(step_number=step_number)
+                continue
 
             # -- POLICY CHECK --
+            self._guard()
             if action.action == ActionType.NAVIGATE:
                 target_url = self._resolve_navigation_url(
                     await self._surface.current_url(), action.params.get("url") or action.params.get("route", "")
@@ -146,6 +183,7 @@ class DiscoveryLoop:
                 return await self._stop(trace, run_id, step_number, DiscoveryStopReason.POLICY_BLOCKED, action_decision.reason)
 
             # -- ACT --
+            self._guard()
             try:
                 extracted_value = await self._execute(action)
             except (TargetNotFound, TargetAmbiguous) as exc:
@@ -153,6 +191,7 @@ class DiscoveryLoop:
                 trace.steps.append(record)
                 self._log(run_id, step_number, "act_error", error_class=type(exc).__name__, detail={"error": str(exc)})
                 history.append(f"step {step_number}: {action.action.value} failed -- {exc}")
+                self._guard()
                 observation = await self._surface.observe(step_number=step_number)
                 continue  # let the model see the failure on the next OBSERVE and decide what to do
             except Exception as exc:  # pragma: no cover -- exercised via a scripted surface in tests
@@ -169,6 +208,7 @@ class DiscoveryLoop:
                 record.extracted_value = extracted_value
 
             if action.action in (ActionType.NAVIGATE, ActionType.CLICK):
+                self._guard()
                 current = await self._surface.current_url()
                 post_decision = self._policy.check_domain(current)
                 if not post_decision.allowed:
@@ -180,6 +220,7 @@ class DiscoveryLoop:
                         f"navigation escaped the allowlist: {post_decision.reason}",
                     )
 
+            self._guard()
             observation_after = await self._surface.observe(step_number=step_number)
             record.observation_after = observation_after
             trace.steps.append(record)
@@ -226,6 +267,47 @@ class DiscoveryLoop:
             return candidate, checkpoint_assertion, None, attempt - 1
 
         return None, None, last_reason, self._max_invalid_output_retries
+
+    async def _handle_potential_handoff(
+        self, trace: DiscoveryTrace, run_id: str, step_number: int, reason: DiscoveryStopReason, message: str
+    ) -> DiscoveryTrace | None:
+        """The single funnel every handoff-eligible stop reason passes
+        through (Section 8: only HUMAN_REQUESTED/STUCK_STATE, never every
+        failure). Returns a finished `DiscoveryTrace` if the run should
+        stop now (no handoff attached, reason not eligible, or the
+        handoff's resume budget was exhausted); returns None if the
+        handoff was resumed successfully and the caller should reset its
+        stuck-state tracking, re-observe, and keep looping.
+
+        `validate=None` is passed to `escalate_and_wait` deliberately: for
+        discovery there is no fixed condition to mechanically recheck --
+        the model itself re-observes and re-decides on the very next
+        OBSERVE -> DECIDE cycle, which is the model-appropriate substitute
+        for the callable validator that replay must use instead."""
+        if self._handoff is None or reason not in self._HANDOFF_ELIGIBLE:
+            return await self._stop(trace, run_id, step_number, reason, message)
+
+        self._guard()
+        current_url = await self._surface.current_url()
+        evidence_ref = await self._evidence.capture(run_id, self._surface) if self._evidence is not None else None
+        request = InterventionRequest.create(
+            run_id=run_id, mode="discovery", reason_code=reason.value, reason_message=message,
+            current_url=current_url, goal=trace.goal, step_id=str(step_number), evidence=evidence_ref,
+        )
+        self._log(run_id, step_number, "escalate", detail={"reason_code": reason.value})
+        try:
+            resumed = await self._handoff.escalate_and_wait(request, validate=None, current_url_fn=self._surface.current_url)
+        except InterventionBudgetExhausted:
+            # The total-distinct-escalations bound (Section 7), separate
+            # from escalate_and_wait's own per-call resume-attempt bound.
+            resumed = False
+        if not resumed:
+            return await self._stop(
+                trace, run_id, step_number, DiscoveryStopReason.INTERVENTION_EXHAUSTED,
+                f"human handoff exhausted its resume budget after stop reason {reason.value}: {message}",
+            )
+        self._log(run_id, step_number, "resume", detail={"reason_code": reason.value})
+        return None
 
     async def _execute(self, action: AgentAction) -> str | None:
         if action.action == ActionType.NAVIGATE:

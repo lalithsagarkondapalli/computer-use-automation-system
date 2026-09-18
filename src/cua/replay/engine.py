@@ -31,22 +31,36 @@ from typing import Any
 
 from cua.actions import ActionType
 from cua.artifact.schema import CapabilityArtifact, Step
+from cua.handoff import HandoffController, InterventionBudgetExhausted, InterventionRequest
 from cua.observability.events import LogEvent
 from cua.observability.logger import StructuredLogger
-from cua.replay.checkpoints import CheckpointEngine
+from cua.replay.checkpoints import CheckpointEngine, CheckpointOutcome
 from cua.replay.evidence import EvidenceCapture
 from cua.replay.extraction import extract_output
 from cua.replay.interpolation import InputValidationError, interpolate_steps, validate_inputs
-from cua.results.taxonomy import OutcomeCode, RecoveryAttempt, RunResult, RunStatus
+from cua.results.taxonomy import EvidenceRef, OutcomeCode, RecoveryAttempt, RunResult, RunStatus
 from cua.safety.engine import PolicyEngine
 from cua.surfaces.base import SurfaceAdapter, TargetAmbiguous, TargetNotFound
 
 
 class ReplayEngine:
-    def __init__(self, policy: PolicyEngine, logger: StructuredLogger, evidence: EvidenceCapture):
+    def __init__(self, policy: PolicyEngine, logger: StructuredLogger, evidence: EvidenceCapture, handoff: HandoffController | None = None):
+        # `handoff` is additive and optional (Section 9): a run built
+        # before Phase 5 that constructs a ReplayEngine with three
+        # positional args keeps working unchanged. It is not required
+        # anywhere in the pipeline this class already had -- routing
+        # TargetAmbiguous and a checkpoint's ESCALATION_REQUIRED outcome
+        # through it is new, additional behavior, never a substitute for
+        # the existing deterministic paths. Zero model/LLM decisions are
+        # introduced by this: every validator passed to
+        # `handoff.escalate_and_wait` below is a plain, deterministic
+        # recheck against the same SurfaceAdapter -- see
+        # tests/test_handoff_isolation.py and
+        # tests/test_replay_model_isolation.py.
         self._policy = policy
         self._logger = logger
         self._evidence = evidence
+        self._handoff = handoff
 
     async def run(self, artifact: CapabilityArtifact, raw_inputs: dict[str, Any], surface: SurfaceAdapter) -> RunResult:
         run_id = str(uuid.uuid4())
@@ -86,6 +100,9 @@ class ReplayEngine:
             step_started = time.monotonic()
             self._log(run_id, artifact, step.step_id, "step_start", action=step.action.value)
 
+            if self._handoff is not None:
+                self._handoff.assert_automation_control()
+
             # -- policy check BEFORE the action reaches the surface -------
             action_decision = self._policy.check_action(step)
             if not action_decision.allowed:
@@ -109,22 +126,40 @@ class ReplayEngine:
                         message=nav_decision.reason, failing_step_id=step.step_id,
                     )
 
-            # -- action, with bounded retry --------------------------------
+            # -- action, with bounded retry, plus (Section 9) one further
+            # deterministic retry if a human handoff resolves an ambiguity --
+            resolved_via_handoff = False
             try:
                 await self._execute_with_retry(surface, step, outputs, recovery_attempts)
             except TargetAmbiguous as exc:
-                return await self._fail(
-                    run_id, artifact, started_at, surface, recovery_attempts,
-                    RunStatus.ESCALATION_REQUIRED, OutcomeCode.AMBIGUOUS_CONTROL,
-                    message=str(exc), failing_step_id=step.step_id,
-                    expected_state="exactly one control matched", observed_state=f"{exc.count} candidates matched via {exc.strategy}",
-                )
+                resolved_via_handoff = await self._try_resolve_ambiguity_with_handoff(run_id, artifact, step, surface, exc)
+                if not resolved_via_handoff:
+                    code = OutcomeCode.INTERVENTION_EXHAUSTED if self._handoff is not None else OutcomeCode.AMBIGUOUS_CONTROL
+                    return await self._fail(
+                        run_id, artifact, started_at, surface, recovery_attempts,
+                        RunStatus.ESCALATION_REQUIRED, code,
+                        message=str(exc), failing_step_id=step.step_id,
+                        expected_state="exactly one control matched", observed_state=f"{exc.count} candidates matched via {exc.strategy}",
+                    )
             except TargetNotFound as exc:
                 return await self._fail(
                     run_id, artifact, started_at, surface, recovery_attempts,
                     RunStatus.HARD_FAILURE, OutcomeCode.TARGET_UNRESOLVABLE,
                     message=str(exc), failing_step_id=step.step_id,
                 )
+
+            if resolved_via_handoff:
+                # a human resolved the ambiguity; deterministically retry
+                # the exact same step once, zero model decisions involved
+                try:
+                    await self._execute_with_retry(surface, step, outputs, recovery_attempts)
+                except (TargetAmbiguous, TargetNotFound) as exc:
+                    code = OutcomeCode.AMBIGUOUS_CONTROL if isinstance(exc, TargetAmbiguous) else OutcomeCode.TARGET_UNRESOLVABLE
+                    return await self._fail(
+                        run_id, artifact, started_at, surface, recovery_attempts,
+                        RunStatus.HARD_FAILURE if code == OutcomeCode.TARGET_UNRESOLVABLE else RunStatus.ESCALATION_REQUIRED,
+                        code, message=f"still unresolved after human handoff: {exc}", failing_step_id=step.step_id,
+                    )
 
             # -- post-action domain-escape check (Section 3.4: redirects) --
             if step.action in (ActionType.NAVIGATE, ActionType.CLICK):
@@ -142,12 +177,19 @@ class ReplayEngine:
             if step.action == ActionType.CHECKPOINT:
                 outcome = await CheckpointEngine().verify(surface, step.checkpoint, step.timeout_ms)
                 if not outcome.passed:
-                    return await self._fail(
-                        run_id, artifact, started_at, surface, recovery_attempts,
-                        outcome.status, outcome.code,
-                        message=outcome.observed, failing_step_id=step.step_id,
-                        expected_state=step.checkpoint.description, observed_state=outcome.observed,
-                    )
+                    resolved = False
+                    if outcome.status == RunStatus.ESCALATION_REQUIRED:
+                        resolved = await self._try_resolve_checkpoint_with_handoff(run_id, artifact, step, surface, outcome)
+                    if not resolved:
+                        status, code = outcome.status, outcome.code
+                        if outcome.status == RunStatus.ESCALATION_REQUIRED and self._handoff is not None:
+                            code = OutcomeCode.INTERVENTION_EXHAUSTED  # a handoff was attempted and its budget was spent
+                        return await self._fail(
+                            run_id, artifact, started_at, surface, recovery_attempts,
+                            status, code,
+                            message=outcome.observed, failing_step_id=step.step_id,
+                            expected_state=step.checkpoint.description, observed_state=outcome.observed,
+                        )
 
             duration_ms = int((time.monotonic() - step_started) * 1000)
             self._log(run_id, artifact, step.step_id, "step_end", action=step.action.value, status="ok", duration_ms=duration_ms)
@@ -191,6 +233,8 @@ class ReplayEngine:
             raise last_exc
 
     async def _execute_once(self, surface: SurfaceAdapter, step: Step, outputs: dict[str, Any]) -> None:
+        if self._handoff is not None:
+            self._handoff.assert_automation_control()
         if step.action == ActionType.NAVIGATE:
             await surface.navigate(step.params.get("url") or step.params.get("route", ""))
         elif step.action == ActionType.CLICK:
@@ -217,6 +261,68 @@ class ReplayEngine:
         if url_or_route.startswith("http://") or url_or_route.startswith("https://"):
             return url_or_route
         return f"{artifact.target.base_url_pattern.rstrip('/')}{url_or_route}"
+
+    async def _try_resolve_ambiguity_with_handoff(
+        self, run_id: str, artifact: CapabilityArtifact, step: Step, surface: SurfaceAdapter, exc: TargetAmbiguous
+    ) -> bool:
+        """Section 9: replay may hand an AMBIGUOUS_CONTROL escalation to a
+        human, but the resume validator here is a plain, deterministic
+        recheck -- re-attempt `surface.resolve(step.target)` and see
+        whether it now succeeds -- never a model call. Returns False
+        immediately (no escalation attempted) if no handoff is attached,
+        so the caller falls through to the pre-Phase-5 failure exactly as
+        before."""
+        if self._handoff is None:
+            return False
+        request = InterventionRequest.create(
+            run_id=run_id, mode="replay", reason_code=OutcomeCode.AMBIGUOUS_CONTROL.value, reason_message=str(exc),
+            current_url=await surface.current_url(), capability_id=artifact.capability_id,
+            capability_version=artifact.capability_version, step_id=step.step_id,
+            expected_state="exactly one control matched", observed_state=f"{exc.count} candidates matched via {exc.strategy}",
+            evidence=await self._capture_evidence(run_id, surface),
+        )
+
+        async def validate() -> bool:
+            try:
+                await surface.resolve(step.target)
+                return True
+            except (TargetAmbiguous, TargetNotFound):
+                return False
+
+        try:
+            return await self._handoff.escalate_and_wait(request, validate=validate, current_url_fn=surface.current_url)
+        except InterventionBudgetExhausted:
+            return False
+
+    async def _try_resolve_checkpoint_with_handoff(
+        self, run_id: str, artifact: CapabilityArtifact, step: Step, surface: SurfaceAdapter, outcome: CheckpointOutcome
+    ) -> bool:
+        """Section 9's other escalation path: a checkpoint's own
+        ConditionProbe classified the observed state as ESCALATION_REQUIRED
+        (e.g. an unrecognized dialog). The resume validator deterministically
+        re-runs the exact same checkpoint verification -- if a human cleared
+        whatever blocked it, `CheckpointEngine` will now report `passed`."""
+        if self._handoff is None:
+            return False
+        request = InterventionRequest.create(
+            run_id=run_id, mode="replay", reason_code=(outcome.code.value if outcome.code else "ESCALATION_REQUIRED"),
+            reason_message=outcome.observed, current_url=await surface.current_url(), capability_id=artifact.capability_id,
+            capability_version=artifact.capability_version, step_id=step.step_id,
+            expected_state=step.checkpoint.description, observed_state=outcome.observed,
+            evidence=await self._capture_evidence(run_id, surface),
+        )
+
+        async def validate() -> bool:
+            recheck = await CheckpointEngine().verify(surface, step.checkpoint, step.timeout_ms)
+            return recheck.passed
+
+        try:
+            return await self._handoff.escalate_and_wait(request, validate=validate, current_url_fn=surface.current_url)
+        except InterventionBudgetExhausted:
+            return False
+
+    async def _capture_evidence(self, run_id: str, surface: SurfaceAdapter) -> EvidenceRef | None:
+        return await self._evidence.capture(run_id, surface)
 
     async def _fail(
         self,
