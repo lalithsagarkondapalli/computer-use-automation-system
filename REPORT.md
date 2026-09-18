@@ -1,33 +1,52 @@
-# REPORT
+# 1 Architecture
 
-*Draft. Every section below is a placeholder until the corresponding phase
-lands. This file is not a submission-ready document yet — treat "TBD" as
-"TBD," not as an implicit claim.*
+Two loops share one interface. `DiscoveryLoop` (`src/cua/agent/loop.py`) runs OBSERVE → DECIDE → VALIDATE → POLICY CHECK → ACT → OBSERVE: it asks a `SurfaceAdapter` for a bounded `Observation` (interactive elements, not raw HTML), passes it plus a short history to a `ModelAdapter`, gets back exactly one typed `AgentAction`, checks the proposal is grounded in what was actually observed (`validate_proposal` — a model can't act on a control it wasn't shown), runs it through `PolicyEngine`, and only then executes it and observes again. `ReplayEngine` runs a structurally similar pipeline — policy check, act, checkpoint, extract — but consumes a pre-built `CapabilityArtifact` instead of a model, deterministically.
 
-## 1. Architecture
+Discovery uses an LLM because the first time a capability is automated, nobody has yet recorded which control is "search" or what the results page looks like — that has to be discovered live, and only a model can turn a natural-language goal into UI actions against a page it has never seen. Replay does not use an LLM because that discovery only needs to happen once: everything replay needs (which control, what to type, how to tell success from failure) is already captured in the artifact, so re-asking a model every run would be slower, non-deterministic, and unauditable for no benefit. This is enforced structurally, not by convention: `cua.replay` never imports `cua.agent` or `cua.models`, proven by `tests/test_replay_model_isolation.py` walking replay's real import graph in a fresh interpreter.
 
-TBD — written in Phase 9, after the full vertical slice exists to describe accurately.
+Both loops act through the same `SurfaceAdapter` interface (`src/cua/surfaces/base.py`); `PlaywrightWebSurface` is the only concrete implementation.
 
-## 2. Artifact schema
+# 2 Artifact schema
 
-TBD.
+`CapabilityArtifact` is the typed, versioned, YAML-persisted contract between discovery and replay: identity and semantic version, a `TargetIdentity`, a declared `risk` level, typed `inputs`/`outputs`, and an ordered list of `Step`s. Loading goes through the same Pydantic validation as construction, so a hand-edited or drifted file fails exactly like bad discovery output would. A capability is rejected if it has zero steps, duplicate step ids, an undeclared `{{input}}` token, or — the rule Phase 8's second genuine failure exercised — no `CHECKPOINT` step.
 
-## 3. Determinism & error handling
+Each `Step` targets a control via `TargetDescriptor`: role, accessible name, visible text, a label anchor, and `dom_selector` kept strictly as a last resort. `resolve()` tries these in order, stopping at the first strategy with exactly one match, and raises `TargetAmbiguous` rather than guessing. This is deliberately not "a selector as the foundation" — a selector breaks the moment legacy markup shifts and explains nothing to a reviewer; role+accessible-name (and even a label anchor) survive markup churn and remain meaningful on surfaces with no DOM at all.
 
-TBD.
+`ExtractionSpec` turns UI state into a typed output via a closed set of named transforms (`none`, `strip`, `currency_to_float`), never an arbitrary expression. `CheckpointAssertion` is a closed, discriminated union (`url_matches`, `element_visible`, `element_not_visible`, `text_present`) for the same reason — a persisted capability must not smuggle arbitrary code into what it asserts. A checkpoint is "a condition you assert to confirm you actually reached the expected state, rather than assuming a click worked," and the schema refuses to validate without at least one.
 
-## 4. Heterogeneity & multi-tenant
+# 3 Determinism & error handling
 
-TBD.
+Every run returns one typed `RunResult` with a `RunStatus` from a closed six-member taxonomy, each with its own closed set of `OutcomeCode`s: **SUCCESS** (no code); **BUSINESS_OUTCOME** — a legitimate answer, not a failure (`CUSTOMER_NOT_FOUND`, `VALIDATION_ERROR`, `PERMISSION_DENIED`); **RECOVERABLE** — transient (`TRANSIENT_LOAD`, `KNOWN_INTERSTITIAL`, `RETRYABLE_NAVIGATION`); **POLICY_BLOCKED** — safety refused before execution (`DOMAIN_NOT_ALLOWED`, `ACTION_TYPE_NOT_ALLOWED`, `RISKY_ACTION_REQUIRES_APPROVAL`); **ESCALATION_REQUIRED** — automation cannot safely decide alone (`AMBIGUOUS_CONTROL`, `UNKNOWN_DIALOG`, `STUCK_STATE`, plus discovery-specific timeout/invalid-output/intervention codes); **HARD_FAILURE** — stop with a clear error (`CHECKPOINT_FAILED`, `TARGET_UNRESOLVABLE`, `INVALID_INPUT`, `SESSION_INVALID`, `INTERNAL_ERROR`). Callers branch on this structured status, never on catching an exception. `ConditionProbe` handles the business-outcome-vs-failure distinction: a checkpoint can watch for a named exceptional condition (e.g. "no member found") before its main assertion's timeout is spent, so a legitimate not-found answer classifies as `BUSINESS_OUTCOME`, never a generic checkpoint failure.
 
-## 5. Escalation & handoff
+Two genuine, real-model failures were hit and fixed in Phase 8, both preserved as evidence rather than deleted. First: a model's first `NAVIGATE` proposed a relative route with no page yet loaded to resolve it against; `PolicyEngine` correctly rejected the resulting empty host (`POLICY_BLOCKED`). Fixed by giving `DiscoveryLoop` an explicit, caller-trusted `target_base_url` as the *only* fallback anchor for that one case — `check_domain()` still runs unmodified on the result, so this cannot turn an unknown destination into an allowed one. Second: a model reached `GOAL_ACHIEVED` with 6 genuine decisions but never proposed `CHECKPOINT` — nothing requires it to — and `ArtifactBuilder` had no fallback, so the resulting artifact was correctly rejected for having no checkpoint. Fixed by having `ArtifactBuilder` deterministically synthesize a checkpoint from the trace's own grounded data: if the last successful `READ_EXTRACT` read a real value from a concrete target, that target's visibility is real, observed grounding (an extraction can't produce a value unless the surface resolved that element), synthesized as `ElementVisibleCheck` on that same target. Otherwise the existing before/after observation-diff logic is reused. If neither yields a groundable assertion, the build is refused — a bare `FINISH` is never treated as proof of success. Both fixes are visible in `evidence/`: `discovery_trace.jsonl` contains the failed `POLICY_BLOCKED` run alongside the eventual success, and `discovered_member_lookup_balance@1.0.0.yaml`'s `checkpoint_synthesized_from_read_extract` step is the unedited output of the second fix.
 
-TBD.
+# 4 Heterogeneity & multi-tenant
 
-## 6. Safety
+This is a design story, not a built one. `SurfaceAdapter` is an abstract interface with one concrete implementation (`PlaywrightWebSurface`, web only); nothing in `cua.agent`, `cua.replay`, `cua.artifact`, or `cua.safety` imports Playwright — they depend only on the interface, which is what would let a second surface (a DOM-poor legacy web app, an accessibility-tree-only surface, a native desktop app) be added as one new adapter without touching those layers. `Observation`'s shape (role-based elements, not raw markup) and `TargetDescriptor`'s signals (role, accessible name, label anchor — everything but `dom_selector`) were chosen specifically because they have analogues on a desktop accessibility tree.
 
-TBD.
+Multi-tenant support is schema-level scaffolding only. `TargetIdentity.compatibility_fingerprint` is the seam a future version-drift check would read; `CapabilityArtifact.variant_overrides` is the shape a per-tenant field override would take. Both are unused in this build — one tenant, one demo app — and no code reads or writes `variant_overrides` today.
 
-## 7. Cuts
+# 5 Escalation & handoff
 
-TBD.
+`HandoffController` owns an explicit ownership state machine: `AUTOMATION_CONTROL → PAUSED_FOR_HUMAN → HUMAN_CONTROL → RESUME_REQUESTED → AUTOMATION_CONTROL` (or back to `PAUSED_FOR_HUMAN`/`HUMAN_CONTROL` if a resume attempt fails validation). Every other transition is rejected by a lookup table. `assert_automation_control()` runs immediately before every live-surface action in both loops and raises unconditionally if automation doesn't currently hold control — an action during `HUMAN_CONTROL` is impossible by construction. The controller never holds a `SurfaceAdapter` of its own; the one live session stays with whichever loop is calling `escalate_and_wait`, so a human resumes on the same browser window, never a second one.
+
+Escalation triggers: an explicit model request, a checkpoint probe classifying observed state as `ESCALATION_REQUIRED` (e.g. an unrecognized dialog), an ambiguous target match (never resolved by guessing), and stuck-state detection — two independent, narrow fingerprints (what the surface currently shows; what the model just proposed, excluding free-text reasoning) that only escalate once the identical pair repeats several times in a row, so an ordinary multi-step interaction on one page never false-positives. Resuming is never "clicking Resume means fixed": replay passes a real validator that re-checks the exact condition that triggered escalation; discovery passes none, since the model itself re-observes and re-decides next. Both resume attempts per escalation and total escalations per run are bounded, so a resume loop cannot run forever. A minimal local `OperatorConsole` (stdlib `http.server`, no auth, no queue) shows why automation stopped with a screenshot and one Resume button; the human acts directly on the already-visible browser, not through the console's own page. `tests/test_handoff_playwright_integration.py` proves the full cycle against a real browser and a real compliance-hold modal.
+
+# 6 Safety
+
+`PolicyEngine.check_domain()` (scheme + host allowlist) runs before every `NAVIGATE` and again after every `NAVIGATE`/`CLICK`, specifically to catch a redirect that escapes the allowlist even when the original target was fine. `check_action()` rejects any disallowed action type, hard-blocks any unconditionally-blocked risk level, and routes any other risky level to `POLICY_BLOCKED`/`RISKY_ACTION_REQUIRES_APPROVAL` (no live approval path exists in this build). Risk is never self-reported by the model: `classify_action_risk()` is a small, reviewable keyword lookup over only structural fields (target name/text/anchor, value/route/url params), never the model's own reasoning text, and deliberately over-classifies toward risky — a false positive costs a policy block; a false negative could let an irreversible action through unexamined.
+
+Redaction is a conservative regex layer (API-key/bearer-token shapes, card-number-length digit runs, SSN-shaped values) applied at every point data leaves the process: every structured log line, and every `InterventionRequest` shown to a human operator (redacted at construction, since the console renders it directly). This is a second, independent layer — a persisted artifact never contains an observed runtime value for a declared input in the first place, since `ArtifactBuilder` replaces it with its `{{input}}` token before the artifact is built; redaction on top of that is defense in depth, proven by a test that fills a secret-shaped value discovery never declared as an input and confirms it still doesn't reach the artifact in the clear.
+
+Structured logs are one append-only, redacted JSONL file per run; discovery and replay stop conditions that aren't a clean success also capture a best-effort screenshot, never crashing the run if capture itself fails.
+
+# 7 Cuts
+
+- **No production CLI** — `src/cua/cli/` is a documented stub. Real entry points are `scripts/run_evidence.py`, `scripts/build_demo_artifact.py`, and direct library use.
+- **One surface implemented** — the interface generalizes (§4); only Playwright/web exists.
+- **One tenant** — `variant_overrides`/`compatibility_fingerprint` are unused schema seams.
+- **`OperatorConsole` is minimal by design** — no auth, TLS, multi-operator queue, or dashboard. Individual manual browser actions during a handoff are not logged, only the aggregate (when control changed hands, state before/after, resume attempts).
+- **Only the most recent discovery-level failure is retained as a discrete evidence file** (`evidence/discovery_failure/`, overwritten per run); full history lives only in the cumulative trace log.
+- **Genuine evidence covers `GOAL_ACHIEVED` → `SUCCESS`, `POLICY_BLOCKED`, and the checkpoint-missing failure — not `BUSINESS_OUTCOME` or `ESCALATION_REQUIRED`.** Those paths are real, implemented, and covered by real-Chromium tests, but not by a genuine Anthropic-backed discovery run in this evidence bundle.
+- **Logging is local JSONL files**, not a real observability backend.
+- **Risk classification is a fixed keyword lookup**, not learned or per-deployment configurable beyond the allowlist itself — broadening it is a reviewed code change, by design, never inferred from a model's own phrasing.
