@@ -19,6 +19,8 @@ and handed back to the discovery loop, never guessed at or coerced here.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from anthropic import AsyncAnthropic
@@ -29,6 +31,29 @@ from cua.agent.actions import AgentAction
 from cua.artifact.targets import TargetDescriptor
 from cua.models.base import ModelAdapter, ModelOutputError
 from cua.surfaces.observation import Observation
+
+
+@dataclass(frozen=True)
+class ModelCallMetadata:
+    """Non-secret metadata about one real `decide()` call -- Phase 8's
+    evidence requirement (Section 10: "record provider, model identifier,
+    timestamp, number of decision calls, stop reason, token usage if
+    exposed"). Deliberately holds no request/response body, no
+    Authorization data, and no hidden model reasoning -- only the small
+    set of fields a reviewer needs to establish a call really reached the
+    provider. `AnthropicModelAdapter.calls` (below) is a list of these,
+    mirroring `FakeModelAdapter.calls`'s existing test-introspection
+    convention, so evidence-generation code and tests can both inspect
+    call count/metadata without changing `ModelAdapter`'s interface."""
+
+    timestamp: str
+    provider: str
+    model: str
+    stop_reason: str | None
+    input_tokens: int | None
+    output_tokens: int | None
+    action: str
+
 
 _TOOL_NAME = "propose_action"
 
@@ -85,10 +110,28 @@ _ACTION_TOOL: dict[str, Any] = {
 
 
 class AnthropicModelAdapter(ModelAdapter):
-    def __init__(self, client: AsyncAnthropic, model_name: str, *, max_tokens: int = 1024):
+    def __init__(
+        self,
+        client: AsyncAnthropic,
+        model_name: str,
+        *,
+        max_tokens: int = 1024,
+        request_timeout_s: float = 60.0,
+    ):
+        """`request_timeout_s` bounds a single `messages.create()` call
+        (Phase 8 adapter audit: previously unset, so a single hung request
+        fell back to the SDK's own multi-minute default and could not be
+        interrupted by DiscoveryLoop's overall_timeout_s, which is only
+        checked between steps, never during an in-flight call). 60s is
+        generous for a single small structured-tool-use call and still
+        bounded well under a typical discovery run's overall timeout."""
         self._client = client
         self._model_name = model_name
         self._max_tokens = max_tokens
+        self._request_timeout_s = request_timeout_s
+        # Non-secret call metadata for Phase 8 evidence (Section 10) --
+        # never the prompt, the response body, or any request header.
+        self.calls: list[ModelCallMetadata] = []
 
     async def decide(self, observation: Observation, history: list[str]) -> AgentAction:
         prompt = self._build_prompt(observation, history)
@@ -99,6 +142,7 @@ class AnthropicModelAdapter(ModelAdapter):
                 tools=[_ACTION_TOOL],
                 tool_choice={"type": "tool", "name": _TOOL_NAME},
                 messages=[{"role": "user", "content": prompt}],
+                timeout=self._request_timeout_s,
             )
         except Exception as exc:
             # Any anthropic.* exception (APIError, RateLimitError, ...) is
@@ -114,7 +158,18 @@ class AnthropicModelAdapter(ModelAdapter):
         if tool_use is None:
             raise ModelOutputError(f"model did not call {_TOOL_NAME!r} (stop_reason={response.stop_reason!r})")
 
-        return self._to_agent_action(tool_use.input)
+        action = self._to_agent_action(tool_use.input)
+        usage = getattr(response, "usage", None)
+        self.calls.append(ModelCallMetadata(
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            provider="anthropic",
+            model=response.model,
+            stop_reason=response.stop_reason,
+            input_tokens=getattr(usage, "input_tokens", None),
+            output_tokens=getattr(usage, "output_tokens", None),
+            action=action.action.value,
+        ))
+        return action
 
     def _to_agent_action(self, raw: dict[str, Any]) -> AgentAction:
         try:
