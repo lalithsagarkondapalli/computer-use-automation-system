@@ -167,6 +167,25 @@ async def test_max_steps_terminates_a_never_finishing_run(tmp_path: Path):
     assert len(trace.steps) == 5
 
 
+async def test_overall_timeout_stops_discovery_deterministically(tmp_path: Path):
+    """overall_timeout_s=0 must trip on the very first loop iteration --
+    time.monotonic() - started is always > 0 by the time the check runs,
+    so this is deterministic and instant, unlike a real 300s timeout test
+    would be (Phase 7 item 4 explicitly asked for this to stay fast)."""
+    surface = FakeSurfaceAdapter()
+    surface.script_observation(_obs(f"{BASE}/", [InteractiveElement(role="button", accessible_name="Btn")]))
+    model = FakeModelAdapter([
+        AgentAction(action=ActionType.CLICK, target=TargetDescriptor(role="button", accessible_name="Btn"), reasoning="click"),
+    ])
+    loop = _make_loop(surface, model, tmp_path, overall_timeout_s=0)
+
+    trace = await loop.run("goal")
+
+    assert trace.stop_reason == DiscoveryStopReason.TIMEOUT
+    assert len(trace.steps) == 0  # stopped before any step executed
+    assert len(model.calls) == 0  # never even asked the model to decide
+
+
 async def test_repeated_state_and_action_triggers_stuck_detection(tmp_path: Path):
     surface = FakeSurfaceAdapter()
     obs = _obs(f"{BASE}/", [InteractiveElement(role="button", accessible_name="Retry")])
