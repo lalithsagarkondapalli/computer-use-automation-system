@@ -12,6 +12,12 @@ the automation system:
            a safe default rather than a silent 500).
   55555 -- found, but blocked behind a Compliance Hold interstitial until
            a human clears it on the live page.
+
+A fourth ID, 67890, is a second plain "found" member -- added in Phase 7
+solely so the full discovery -> artifact -> deterministic-replay contract
+test (tests/test_full_contract_e2e.py) can replay with a genuinely
+different valid input than the one used during discovery, rather than
+re-running the exact literal value discovery happened to observe.
 """
 from __future__ import annotations
 
@@ -28,6 +34,7 @@ class SyntheticMember:
 _MEMBERS: dict[str, SyntheticMember] = {
     "12345": SyntheticMember(member_id="12345", name="SYNTH-MEMBER-ALPHA (fictional)", savings_balance="$1,234.56"),
     "55555": SyntheticMember(member_id="55555", name="SYNTH-MEMBER-GAMMA (fictional)", savings_balance="$9,876.54"),
+    "67890": SyntheticMember(member_id="67890", name="SYNTH-MEMBER-DELTA (fictional)", savings_balance="$542.10"),
 }
 
 # IDs that resolve to a real record but are gated by a compliance hold.

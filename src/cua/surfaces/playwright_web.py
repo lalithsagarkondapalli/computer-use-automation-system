@@ -187,14 +187,48 @@ class PlaywrightWebSurface(SurfaceAdapter):
         return self._page.url
 
     async def observe(self, step_number: int) -> Observation:
+        # Bug fix (Phase 7 audit): role detection used to fall back to the
+        # bare tag name ("input", "select") whenever no explicit `role`
+        # attribute was present. That silently disagreed with `resolve()`'s
+        # role_name strategy, which goes through Playwright's real
+        # `get_by_role()` -- i.e. the actual computed ARIA role ("textbox"
+        # for a plain <input type=text>, "combobox" for <select>, "link"
+        # for <a>). A discovery proposal grounded in an Observation's role
+        # could therefore fail VALIDATE's grounding check against a real
+        # page even though the exact same role_name would have resolved
+        # fine -- this was never exercised end-to-end before the Phase 7
+        # discovery-against-a-real-browser contract test (Phase 3/5's
+        # real-browser tests always hand-wrote the target's role directly;
+        # Phase 4/5's discovery tests always used FakeSurfaceAdapter, whose
+        # observe() just returns whatever a test scripted). Mapped here to
+        # the same implicit ARIA roles Playwright itself computes for the
+        # handful of tags `_OBSERVE_SELECTOR` actually selects.
         elements = await self._page.eval_on_selector_all(
             _OBSERVE_SELECTOR,
-            f"""(nodes) => nodes.slice(0, {_OBSERVE_MAX_ELEMENTS}).map(n => ({{
-                role: n.getAttribute('role') || n.tagName.toLowerCase(),
-                accessible_name: n.getAttribute('aria-label') || n.innerText || n.getAttribute('placeholder') || null,
-                text: n.innerText || null,
-                control_type: n.tagName.toLowerCase(),
-            }}))""",
+            f"""(nodes) => nodes.slice(0, {_OBSERVE_MAX_ELEMENTS}).map(n => {{
+                const explicit = n.getAttribute('role');
+                let role = explicit;
+                if (!role) {{
+                    const tag = n.tagName.toLowerCase();
+                    if (tag === 'a') role = 'link';
+                    else if (tag === 'select') role = 'combobox';
+                    else if (tag === 'input') {{
+                        const t = (n.getAttribute('type') || 'text').toLowerCase();
+                        if (t === 'checkbox') role = 'checkbox';
+                        else if (t === 'radio') role = 'radio';
+                        else if (t === 'button' || t === 'submit' || t === 'reset') role = 'button';
+                        else role = 'textbox';
+                    }} else {{
+                        role = tag;
+                    }}
+                }}
+                return {{
+                    role: role,
+                    accessible_name: n.getAttribute('aria-label') || n.innerText || n.getAttribute('placeholder') || null,
+                    text: n.innerText || null,
+                    control_type: n.tagName.toLowerCase(),
+                }};
+            }})""",
         )
         return Observation(
             url=self._page.url,
