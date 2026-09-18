@@ -1,0 +1,16 @@
+{
+  "provider": "anthropic",
+  "model": "claude-sonnet-5",
+  "goal": "Look up member 12345 and return their current savings balance.",
+  "discovery_member_id": "12345",
+  "stop_reason": "GOAL_ACHIEVED",
+  "run_id": "b84627fd-86cd-4c2b-93a0-bd40cf9fd176",
+  "genuine_model_decision_calls": 6,
+  "steps_executed": 6,
+  "artifact_path": "evidence/discovered_member_lookup_balance@1.0.0.yaml",
+  "artifact_capability_id": "discovered_member_lookup_balance",
+  "artifact_capability_version": "1.0.0",
+  "member_id_parameterized_as": "{{member_id}}",
+  "started_at": "2026-09-18T22:17:12.633029+00:00",
+  "finished_at": "2026-09-18T22:17:38.555776+00:00"
+}

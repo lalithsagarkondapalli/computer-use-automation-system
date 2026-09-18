@@ -1,0 +1,202 @@
+schema_version: '1.0'
+capability_id: discovered_member_lookup_balance
+capability_version: 1.0.0
+name: Look up member and read savings balance (genuine Phase 8 discovery)
+description: Built directly from a real AnthropicModelAdapter-backed discovery run
+  against the local synthetic demo app.
+target:
+  app_name: CU Ops Console
+  vendor: null
+  product: null
+  base_url_pattern: http://127.0.0.1:60969
+  compatibility_fingerprint: null
+risk: SAFE
+inputs:
+- name: member_id
+  type: string
+  required: true
+  description: 5-digit synthetic member identifier
+  example: '12345'
+outputs:
+- name: savings_balance
+  type: float
+  description: Current savings balance
+steps:
+- step_id: s1_navigate
+  action: navigate
+  target: null
+  params:
+    url: http://127.0.0.1:60969
+  extraction: null
+  checkpoint: null
+  timeout_ms: 10000
+  retry:
+    max_attempts: 1
+    backoff_ms: 500
+  risk: SAFE
+- step_id: s2_fill
+  action: fill
+  target:
+    role: textbox
+    accessible_name: Member ID
+    visible_text: null
+    semantic_relationship: null
+    nearby_anchor: null
+    dom_selector: null
+    frame_path: []
+    expected_control_type: null
+    strategy_order:
+    - role_name
+    - label
+    - text
+    - dom_selector
+  params:
+    value: '{{member_id}}'
+  extraction: null
+  checkpoint: null
+  timeout_ms: 10000
+  retry:
+    max_attempts: 1
+    backoff_ms: 500
+  risk: SAFE
+- step_id: s3_click
+  action: click
+  target:
+    role: button
+    accessible_name: Search
+    visible_text: Search
+    semantic_relationship: null
+    nearby_anchor: null
+    dom_selector: null
+    frame_path: []
+    expected_control_type: null
+    strategy_order:
+    - role_name
+    - label
+    - text
+    - dom_selector
+  params: {}
+  extraction: null
+  checkpoint: null
+  timeout_ms: 10000
+  retry:
+    max_attempts: 1
+    backoff_ms: 500
+  risk: SAFE
+- step_id: s4_read_extract
+  action: read_extract
+  target:
+    role: status
+    accessible_name: Savings Balance
+    visible_text: $1,234.56
+    semantic_relationship: null
+    nearby_anchor: null
+    dom_selector: null
+    frame_path: []
+    expected_control_type: null
+    strategy_order:
+    - role_name
+    - label
+    - text
+    - dom_selector
+  params: {}
+  extraction:
+    output_name: savings_balance
+    target:
+      role: status
+      accessible_name: Savings Balance
+      visible_text: $1,234.56
+      semantic_relationship: null
+      nearby_anchor: null
+      dom_selector: null
+      frame_path: []
+      expected_control_type: null
+      strategy_order:
+      - role_name
+      - label
+      - text
+      - dom_selector
+    attribute: text
+    transform: currency_to_float
+  checkpoint: null
+  timeout_ms: 10000
+  retry:
+    max_attempts: 1
+    backoff_ms: 500
+  risk: SAFE
+- step_id: checkpoint_synthesized_from_read_extract
+  action: checkpoint
+  target: null
+  params: {}
+  extraction: null
+  checkpoint:
+    description: the element read for output 'savings_balance' was visible (synthesized
+      from a successful extraction; the model did not explicitly emit a CHECKPOINT
+      action)
+    assertion:
+      type: element_visible
+      target:
+        role: status
+        accessible_name: Savings Balance
+        visible_text: $1,234.56
+        semantic_relationship: null
+        nearby_anchor: null
+        dom_selector: null
+        frame_path: []
+        expected_control_type: null
+        strategy_order:
+        - role_name
+        - label
+        - text
+        - dom_selector
+    probes: []
+  timeout_ms: 10000
+  retry:
+    max_attempts: 1
+    backoff_ms: 500
+  risk: SAFE
+- step_id: s5_read_extract
+  action: read_extract
+  target:
+    role: status
+    accessible_name: Savings Balance
+    visible_text: $1,234.56
+    semantic_relationship: null
+    nearby_anchor: null
+    dom_selector: null
+    frame_path: []
+    expected_control_type: null
+    strategy_order:
+    - role_name
+    - label
+    - text
+    - dom_selector
+  params: {}
+  extraction:
+    output_name: savings_balance
+    target:
+      role: status
+      accessible_name: Savings Balance
+      visible_text: $1,234.56
+      semantic_relationship: null
+      nearby_anchor: null
+      dom_selector: null
+      frame_path: []
+      expected_control_type: null
+      strategy_order:
+      - role_name
+      - label
+      - text
+      - dom_selector
+    attribute: text
+    transform: currency_to_float
+  checkpoint: null
+  timeout_ms: 10000
+  retry:
+    max_attempts: 1
+    backoff_ms: 500
+  risk: SAFE
+preconditions: []
+created_by: discovery_agent
+discovery_run_id: b84627fd-86cd-4c2b-93a0-bd40cf9fd176
+variant_overrides: {}

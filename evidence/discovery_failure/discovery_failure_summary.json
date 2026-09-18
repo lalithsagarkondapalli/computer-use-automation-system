@@ -1,0 +1,9 @@
+{
+  "goal": "Look up member 12345 and return their current savings balance.",
+  "stop_reason": "INVALID_OUTPUT_EXHAUSTED",
+  "stop_message": "exhausted 2 correction attempts: model call failed: Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'API key is invalid.'}, 'request_id': None}",
+  "steps_executed": 1,
+  "genuine_model_decision_calls": 0,
+  "run_id": "a47bc0bb-ed5f-41eb-83ff-80b5ea1f9600",
+  "note": "A genuine AnthropicModelAdapter-backed discovery attempt that did not reach GOAL_ACHIEVED. Preserved as-is, not edited to look successful."
+}

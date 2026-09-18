@@ -1,0 +1,14 @@
+{
+  "replay_member_id": "67890",
+  "replay_status": "SUCCESS",
+  "replay_code": null,
+  "replay_outputs": {
+    "savings_balance": 542.1
+  },
+  "expected_savings_balance": 542.1,
+  "fresh_session": true,
+  "model_calls_before_replay": 6,
+  "model_calls_after_replay": 6,
+  "model_calls_increased_during_replay": false,
+  "artifact_path": "evidence/discovered_member_lookup_balance@1.0.0.yaml"
+}
