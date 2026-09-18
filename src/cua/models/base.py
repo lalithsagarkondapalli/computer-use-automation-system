@@ -12,7 +12,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 from cua.agent.actions import AgentAction
-from cua.agent.observation import Observation
+from cua.surfaces.observation import Observation
 
 
 class ModelAdapter(ABC):

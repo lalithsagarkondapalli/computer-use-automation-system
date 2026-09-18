@@ -96,7 +96,10 @@ class Step(BaseModel):
             raise ValueError(
                 f"{self.action} is an agent-loop control action, not valid inside a persisted step"
             )
-        if self.action in (ActionType.CLICK, ActionType.FILL, ActionType.SELECT) and self.target is None:
+        if (
+            self.action in (ActionType.CLICK, ActionType.FILL, ActionType.SELECT, ActionType.WAIT)
+            and self.target is None
+        ):
             raise ValueError(f"{self.action} requires a target")
         if self.action == ActionType.FILL and "value" not in self.params:
             raise ValueError("FILL requires params['value']")

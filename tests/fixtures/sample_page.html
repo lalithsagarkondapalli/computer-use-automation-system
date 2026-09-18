@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Locator test fixture</title></head>
+<body>
+  <input aria-label="Member ID" id="member-id" type="text" />
+
+  <div role="status" aria-label="Loading" id="spinner">Loading...</div>
+
+  <button aria-label="Search" onclick="
+      document.getElementById('results').style.display='block';
+      document.getElementById('spinner').style.display='none';
+      location.hash='#results';
+  ">Search</button>
+
+  <div id="results" style="display:none">
+    <div role="status" aria-label="Savings Balance">$1,234.56</div>
+  </div>
+
+  <div id="legacy-fallback">Legacy Control</div>
+
+  <button aria-label="Duplicate">Same</button>
+  <button aria-label="Duplicate">Same</button>
+
+  <button aria-label="Action">Save Draft</button>
+  <button aria-label="Action">Save Final</button>
+</body>
+</html>

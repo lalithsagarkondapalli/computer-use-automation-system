@@ -55,10 +55,17 @@ class OutcomeCode(str, Enum):
     CHECKPOINT_FAILED = "CHECKPOINT_FAILED"
     SESSION_INVALID = "SESSION_INVALID"
     TARGET_UNRESOLVABLE = "TARGET_UNRESOLVABLE"
+    INVALID_INPUT = "INVALID_INPUT"  # added in Phase 3: a caller-supplied invocation
+    # parameter is missing or the wrong type. Distinct from INTERNAL_ERROR
+    # (something broke inside) -- this is a contract violation by the
+    # caller, caught before the surface is ever touched.
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
-_VALID_CODES: dict[RunStatus, frozenset[OutcomeCode]] = {
+# Public (not the Phase 2 private `_VALID_CODES`): Phase 3's ConditionProbe
+# (cua.artifact.checks) needs the same status/code mapping RunResult
+# enforces, and duplicating the table would risk it drifting out of sync.
+VALID_CODES_FOR_STATUS: dict[RunStatus, frozenset[OutcomeCode]] = {
     RunStatus.SUCCESS: frozenset(),
     RunStatus.BUSINESS_OUTCOME: frozenset(
         {OutcomeCode.CUSTOMER_NOT_FOUND, OutcomeCode.VALIDATION_ERROR, OutcomeCode.PERMISSION_DENIED}
@@ -86,10 +93,15 @@ _VALID_CODES: dict[RunStatus, frozenset[OutcomeCode]] = {
             OutcomeCode.CHECKPOINT_FAILED,
             OutcomeCode.SESSION_INVALID,
             OutcomeCode.TARGET_UNRESOLVABLE,
+            OutcomeCode.INVALID_INPUT,
             OutcomeCode.INTERNAL_ERROR,
         }
     ),
 }
+
+
+def code_is_valid_for_status(status: RunStatus, code: OutcomeCode) -> bool:
+    return code in VALID_CODES_FOR_STATUS[status]
 
 
 class EvidenceRef(BaseModel):
@@ -141,14 +153,14 @@ class RunResult(BaseModel):
 
     @model_validator(mode="after")
     def _code_matches_status(self) -> "RunResult":
-        allowed = _VALID_CODES[self.status]
         if self.status == RunStatus.SUCCESS:
             if self.code is not None:
                 raise ValueError("SUCCESS must not carry an outcome code")
         else:
             if self.code is None:
                 raise ValueError(f"{self.status} requires an outcome code")
-            if self.code not in allowed:
+            if not code_is_valid_for_status(self.status, self.code):
+                allowed = VALID_CODES_FOR_STATUS[self.status]
                 raise ValueError(
                     f"code {self.code} is not valid for status {self.status}; "
                     f"allowed: {sorted(c.value for c in allowed)}"

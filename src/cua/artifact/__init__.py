@@ -1,4 +1,4 @@
-from cua.artifact.checks import CheckpointSpec
+from cua.artifact.checks import CheckpointSpec, ConditionProbe
 from cua.artifact.extraction import ExtractionSpec
 from cua.artifact.schema import (
     CapabilityArtifact,
@@ -23,5 +23,6 @@ __all__ = [
     "TargetIdentity",
     "TargetDescriptor",
     "CheckpointSpec",
+    "ConditionProbe",
     "ExtractionSpec",
 ]

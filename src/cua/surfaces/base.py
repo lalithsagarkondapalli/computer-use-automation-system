@@ -14,8 +14,9 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-from cua.agent.observation import Observation
+from cua.artifact.checks import CheckpointAssertion
 from cua.artifact.targets import TargetDescriptor
+from cua.surfaces.observation import Observation
 
 
 @dataclass(frozen=True)
@@ -87,6 +88,21 @@ class SurfaceAdapter(ABC):
         ReplayEngine) decide what a timeout means in context (retry,
         RECOVERABLE, or HARD_FAILURE), so this method itself stays a
         boolean fact, not a policy decision.
+        """
+        ...
+
+    @abstractmethod
+    async def wait_for_checkpoint(self, assertion: CheckpointAssertion, timeout_ms: int) -> bool:
+        """Wait for a checkpoint assertion (Section 3.3's "postcondition")
+        to hold, e.g. a URL pattern, an element becoming visible/hidden, or
+        text appearing. Returns False on timeout, never raises for a mere
+        timeout -- the ReplayEngine's CheckpointEngine decides what a
+        failed checkpoint means (HARD_FAILURE, or a declared business
+        outcome/escalation via a ConditionProbe). This is a distinct method
+        from `resolve` because a checkpoint can assert something that is
+        not "a control exists" (e.g. a URL), and because it must use each
+        surface's own native, event-driven waiting where one exists,
+        rather than the resolver's single-shot count check.
         """
         ...
 

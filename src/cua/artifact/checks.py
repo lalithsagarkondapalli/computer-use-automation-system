@@ -13,9 +13,10 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from cua.artifact.targets import TargetDescriptor
+from cua.results.taxonomy import OutcomeCode, RunStatus, code_is_valid_for_status
 
 
 class UrlMatchesCheck(BaseModel):
@@ -44,6 +45,37 @@ CheckpointAssertion = Annotated[
 ]
 
 
+class ConditionProbe(BaseModel):
+    """A named exceptional condition to watch for while a checkpoint waits.
+
+    Added in Phase 3: a bare pass/fail checkpoint can't express "if you see
+    this 'no member found' message, that's CUSTOMER_NOT_FOUND, not a
+    failure" -- exactly the "business outcome vs. failure" distinction the
+    assignment's glossary calls the most common design mistake in this
+    space. `CheckpointEngine` (cua.replay.checkpoints) checks each probe,
+    in order, before waiting on the checkpoint's own assertion; the first
+    one observed short-circuits with this status/code instead.
+    """
+
+    description: str
+    assertion: CheckpointAssertion
+    status: RunStatus
+    code: OutcomeCode
+    probe_timeout_ms: int = Field(default=1500, ge=0, le=30_000)
+
+    @model_validator(mode="after")
+    def _status_and_code_are_a_valid_probe_outcome(self) -> "ConditionProbe":
+        if self.status not in (RunStatus.BUSINESS_OUTCOME, RunStatus.ESCALATION_REQUIRED, RunStatus.RECOVERABLE):
+            raise ValueError(
+                f"a condition probe may only signal BUSINESS_OUTCOME, "
+                f"ESCALATION_REQUIRED, or RECOVERABLE, not {self.status}"
+            )
+        if not code_is_valid_for_status(self.status, self.code):
+            raise ValueError(f"{self.code} is not a valid code for status {self.status}")
+        return self
+
+
 class CheckpointSpec(BaseModel):
     description: str
     assertion: CheckpointAssertion
+    probes: list[ConditionProbe] = Field(default_factory=list)

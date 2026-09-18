@@ -17,9 +17,9 @@ from __future__ import annotations
 from pydantic import BaseModel, Field, model_validator
 
 # Tried in this order by SurfaceAdapter.resolve(); the first strategy that
-# yields exactly one match wins. role_name and text survive legacy/no-DOM
-# surfaces; dom_selector is discovery-time-only scaffolding.
-DEFAULT_STRATEGY_ORDER: tuple[str, ...] = ("role_name", "text", "dom_selector")
+# yields exactly one match wins. role_name, label, and text survive
+# legacy/no-DOM surfaces; dom_selector is discovery-time-only scaffolding.
+DEFAULT_STRATEGY_ORDER: tuple[str, ...] = ("role_name", "label", "text", "dom_selector")
 
 
 class TargetDescriptor(BaseModel):
@@ -35,10 +35,14 @@ class TargetDescriptor(BaseModel):
 
     @model_validator(mode="after")
     def _at_least_one_signal(self) -> "TargetDescriptor":
-        if not any([self.role, self.accessible_name, self.visible_text, self.dom_selector]):
+        # nearby_anchor added to this check in Phase 3: once "label" became a
+        # real resolution strategy (get_by_label), a descriptor carrying only
+        # a label anchor is a legitimate, sufficient target -- the original
+        # Phase 2 check predated that strategy and would reject it.
+        if not any([self.role, self.accessible_name, self.visible_text, self.nearby_anchor, self.dom_selector]):
             raise ValueError(
                 "TargetDescriptor needs at least one identifying signal "
-                "(role, accessible_name, visible_text, or dom_selector)"
+                "(role, accessible_name, visible_text, nearby_anchor, or dom_selector)"
             )
         if self.role is not None and self.accessible_name is None:
             raise ValueError(
