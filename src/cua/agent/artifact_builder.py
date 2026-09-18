@@ -18,10 +18,11 @@ from __future__ import annotations
 from pydantic import ValidationError
 
 from cua.actions import ActionType
+from cua.agent.checkpoint_synthesis import synthesize_checkpoint
 from cua.agent.inference import infer_read_attribute, infer_transform
 from cua.agent.risk import classify_action_risk
 from cua.agent.trace import DiscoveryStepRecord, DiscoveryStopReason, DiscoveryTrace
-from cua.artifact.checks import CheckpointSpec, ConditionProbe
+from cua.artifact.checks import CheckpointSpec, ConditionProbe, ElementVisibleCheck
 from cua.artifact.extraction import ExtractionSpec
 from cua.artifact.schema import CapabilityArtifact, InputParam, OutputParam, RiskLevel, Step, TargetIdentity
 from cua.safety.redaction import redact_text
@@ -77,6 +78,18 @@ class ArtifactBuilder:
             step = self._build_step(index, record, parameter_values, declared_outputs)
             risk_seen.add(step.risk)
             steps.append(step)
+
+        if not any(s.action == ActionType.CHECKPOINT for s in steps):
+            # The model reached GOAL_ACHIEVED without ever explicitly proposing
+            # a CHECKPOINT action -- nothing in the action schema or prompt
+            # requires it to. Rather than accept a bare FINISH as proof of
+            # success (which would let an ungrounded claim into a persisted
+            # capability), deterministically re-derive a checkpoint from the
+            # trace's own structured data, the same way every other field in
+            # this builder is re-derived rather than trusted from the model.
+            checkpoint_step, insert_at = self._synthesize_missing_checkpoint(executed)
+            steps.insert(insert_at, checkpoint_step)
+            risk_seen.add(checkpoint_step.risk)
 
         if known_business_outcome_probes:
             self._attach_probes_to_last_checkpoint(steps, known_business_outcome_probes)
@@ -145,6 +158,85 @@ class ArtifactBuilder:
             if literal and literal in result:
                 result = result.replace(literal, f"{{{{{param_name}}}}}")
         return redact_text(result)
+
+    def _synthesize_missing_checkpoint(self, executed: list[DiscoveryStepRecord]) -> tuple[Step, int]:
+        """Deterministically re-derive a checkpoint from the trace's own
+        structured data when the model reached GOAL_ACHIEVED without ever
+        proposing a CHECKPOINT action itself.
+
+        This never fabricates an observation the trace doesn't contain and
+        never treats a bare FINISH as proof of success. Two priorities, both
+        grounded in data the discovery surface actually returned:
+
+        1. If the last executed READ_EXTRACT produced a real value from a
+           concrete target, that target's visibility *is* the grounding --
+           the extraction could not have produced a value unless the live
+           surface resolved that exact element. Synthesize an
+           ElementVisibleCheck on it.
+        2. Otherwise, fall back to the same before/after observation diff
+           `synthesize_checkpoint` already uses when the model itself
+           proposes a CHECKPOINT (Phase 4), applied to the final executed
+           step's own recorded observations.
+
+        If neither yields a groundable assertion, refuse to build an
+        artifact at all -- this is intentionally not a fallback that
+        invents a generic, unverifiable checkpoint.
+
+        Returns the new checkpoint `Step` plus the index at which it should
+        be inserted into the artifact's `steps` list (indices line up 1:1
+        with `executed` since both are built in trace order)."""
+        for i in range(len(executed) - 1, -1, -1):
+            record = executed[i]
+            action = record.action
+            if (
+                action is not None
+                and action.action == ActionType.READ_EXTRACT
+                and record.extracted_value
+                and action.target is not None
+            ):
+                output_name = action.params.get("output_name", "")
+                checkpoint = CheckpointSpec(
+                    description=(
+                        f"the element read for output '{output_name}' was visible "
+                        "(synthesized from a successful extraction; the model did "
+                        "not explicitly emit a CHECKPOINT action)"
+                    ),
+                    assertion=ElementVisibleCheck(target=action.target),
+                )
+                step = Step(
+                    step_id="checkpoint_synthesized_from_read_extract",
+                    action=ActionType.CHECKPOINT,
+                    checkpoint=checkpoint,
+                    risk=RiskLevel.SAFE,
+                )
+                return step, i
+
+        last = executed[-1]
+        if last.observation_before is not None and last.observation_after is not None:
+            assertion = synthesize_checkpoint("", last.observation_before, last.observation_after)
+            if assertion is not None:
+                checkpoint = CheckpointSpec(
+                    description=(
+                        "observable state changed across the final discovery step "
+                        "(synthesized from a before/after observation diff; the "
+                        "model did not explicitly emit a CHECKPOINT action)"
+                    ),
+                    assertion=assertion,
+                )
+                step = Step(
+                    step_id="checkpoint_synthesized_from_observation_diff",
+                    action=ActionType.CHECKPOINT,
+                    checkpoint=checkpoint,
+                    risk=RiskLevel.SAFE,
+                )
+                return step, len(executed)
+
+        raise ArtifactBuildError(
+            "trace reached GOAL_ACHIEVED but contains no groundable evidence to "
+            "synthesize a checkpoint from (no successful READ_EXTRACT with a "
+            "concrete target, and no observable state change on the final "
+            "step) -- refusing to build an artifact on a bare FINISH claim"
+        )
 
     def _attach_probes_to_last_checkpoint(self, steps: list[Step], probes: list[ConditionProbe]) -> None:
         for step in reversed(steps):
