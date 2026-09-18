@@ -1,0 +1,29 @@
+[project]
+name = "computer-use-automation-system"
+version = "0.1.0"
+description = "Discovery -> capability artifact -> deterministic replay automation system for legacy back-office UIs (interface.ai take-home)."
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.6,<3",
+    "PyYAML>=6.0,<7",
+    "python-dotenv>=1.0,<2",
+]
+
+# NOTE: playwright, fastapi/uvicorn, and the anthropic SDK are intentionally
+# NOT listed yet. Per the assignment's own guidance, each dependency should
+# earn its place; they are added in the pyproject update that ships the
+# phase that actually imports them (Playwright -> Phase 3 surface adapter,
+# FastAPI/uvicorn -> Phase 5 handoff console + Phase 6 demo app, anthropic
+# -> Phase 4 discovery). See REPORT.md "Cuts" for the full dependency log.
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0,<9",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
