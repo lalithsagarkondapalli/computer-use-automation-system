@@ -1,6 +1,6 @@
 # Computer-Use Automation System
 
-interface.ai take-home — Applied AI Engineer / Business Automation.
+Built solo, end to end: problem framing, architecture, implementation, 229 tests, and a genuine run against a real Anthropic model.
 
 A system that turns "an LLM figuring out how to do something in a legacy
 web UI, once" into "a typed, reviewable, deterministic capability that
@@ -12,6 +12,25 @@ replays forever without an LLM." In one sentence:
 2. **Capture** — once the goal is reached, the executed trace is deterministically compiled into a typed, versioned `CapabilityArtifact` — the steps, the target signals for each control, a checkpoint that proves success, and which values are runtime parameters vs. fixed. No LLM call happens during this step.
 3. **Replay** — later, with no model involved at all, `ReplayEngine` reads that artifact and executes it against a fresh browser session with new input, verifying the same checkpoint and extracting the same typed output. Zero LLM calls, deterministic outcome, structured result (`SUCCESS` / `BUSINESS_OUTCOME` / `RECOVERABLE` / `POLICY_BLOCKED` / `ESCALATION_REQUIRED` / `HARD_FAILURE`).
 4. **Human intervenes when required** — if replay or discovery hits something automation shouldn't decide alone (an unrecognized dialog, an ambiguous control, a stuck loop), the same live session pauses, a human takes over on the same page, and control hands back — never a second, disconnected session.
+
+## What I owned, and what I learned
+
+**The problem.** An LLM agent that clicks through a legacy web app is impressive once and a liability every day after: each run costs tokens, takes seconds per step, and can decide differently. Operations teams need the same task to run the same way every time, and to stop and ask a human when something unexpected appears.
+
+**Decisions I made**
+
+- **Split "figuring it out" from "doing it".** The model is used once, to discover a workflow; the result is compiled into a typed, human-reviewable YAML artifact; replay never calls a model. An import-graph test enforces that replay *cannot* depend on the model layer, rather than relying on convention.
+- **Typed outcomes instead of exceptions.** Every run returns one of six statuses (`SUCCESS`, `BUSINESS_OUTCOME`, `ESCALATION_REQUIRED`, ...), so a caller can route "customer not found" differently from "the page changed".
+- **Safety before the page is touched.** Domain/action allowlists and a risk gate run on every proposed action; risk is classified deterministically, never by asking the model how risky its own action is. Secrets and PII are redacted before logging.
+- **Humans take over the *same* session.** On an unrecognised dialog or a stuck loop, automation pauses and a person acts on the same live page; resume is validated, not trusted.
+
+**What running it for real taught me** (all preserved in `evidence/`, not edited away):
+
+1. The model's first navigation was a relative URL with no page loaded; the policy engine correctly blocked it. Fix: a trusted base URL for exactly that case, without loosening the allowlist.
+2. The model reached the goal but never proposed a checkpoint, so the artifact builder refused to build. Fix: synthesise the checkpoint deterministically from what the run actually read.
+3. Credential failures surfaced as clear typed errors rather than retries, which is the behaviour I wanted to prove.
+
+The pattern I'd take into any AI product: let the model explore, make what it found reviewable, and run the hot path without it.
 
 This README gets a reviewer running the system. `REPORT.md` covers the design decisions and trade-offs in depth.
 
